@@ -854,6 +854,6 @@ async def main_bot():
 
 if __name__ == "__main__":
     try:
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        asyncio.run(main_bot())
     except KeyboardInterrupt:
         logger.info("⛔ Bot stopped by user")
