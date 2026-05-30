@@ -849,11 +849,12 @@ async def main_bot():
     print("✅ Bot চালু! টেলিগ্রামে আপনার বটে /start দিন।")
     
     # বট চালু করুন
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main_bot())
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(main_bot())
     except KeyboardInterrupt:
         logger.info("⛔ Bot stopped by user")
