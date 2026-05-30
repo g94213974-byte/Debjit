@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# mass_bot.py - Render Optimized Mass Message Bot
+# mass_bot.py - Render Optimized (No aiohttp)
 
 import os
 import sys
@@ -9,7 +9,7 @@ import random
 import logging
 from datetime import datetime
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.errors import FloodWaitError
 from telethon.tl.functions.messages import GetDialogsRequest
 from telethon.tl.types import InputPeerEmpty
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -19,13 +19,11 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
 
-# ====== আপনার বট টোকেন (নতুন) ======
+# ====== আপনার বট টোকেন ======
 BOT_TOKEN = "8875386448:AAH2RMJixaVOyLPZkYJayh3WcGVrc5octnA"
 OWNER_ID = 8001816524
 
@@ -74,11 +72,9 @@ def load_data():
         with open(DATA_FILE, 'r') as f:
             data = json.load(f)
         
-        # পুরনো corrupted ডাটা ক্লিন করুন
         if not isinstance(data, dict):
             data = default_data
         
-        # শুধু valid keys রাখুন
         accounts_data = data.get('accounts', {})
         if not isinstance(accounts_data, dict):
             accounts_data = {}
@@ -201,7 +197,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == 'add_account':
         context.user_data['awaiting_input'] = 'add_account'
         await query.edit_message_text(
-            "📱 ফরম্যাটে পাঠান: `সেশন_নেম,API_ID,API_HASH`\nউদাহরণ: `acc1,123456,abc123`\n\n'বাতিল' লিখুন বাতিল করতে।",
+            "📱 ফরম্যাট: `সেশন_নেম,API_ID,API_HASH`\nউদাহরণ: `acc1,123456,abc123`\n\n'বাতিল' লিখুন বাতিল করতে।",
             parse_mode='Markdown'
         )
     elif data.startswith('view_'):
@@ -490,7 +486,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if uid not in blocked_users:
             blocked_users.append(uid)
             save_data()
-        await update.message.reply_text(f"{'🔒' if uid in blocked_users else '✅'} `{uid}`", parse_mode='Markdown')
+        await update.message.reply_text(f"🔒 `{uid}` ব্লক করা হয়েছে!", parse_mode='Markdown')
         context.user_data['awaiting_input'] = None
 
     elif awaiting == 'add_allowed_user':
@@ -508,7 +504,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if uid in blocked_users:
             blocked_users.remove(uid)
             save_data()
-        await update.message.reply_text(f"{'🔓' if uid not in blocked_users else '❌'} `{uid}`", parse_mode='Markdown')
+        await update.message.reply_text(f"🔓 `{uid}` আনব্লক করা হয়েছে!", parse_mode='Markdown')
         context.user_data['awaiting_input'] = None
 
     elif awaiting == 'remove_allowed_user':
@@ -546,91 +542,101 @@ async def run_account(session_name):
                     if hasattr(e, 'title') and e.title not in EXCLUDED_GROUPS:
                         groups.append(e)
                 except: pass
-        except: return
+        except Exception as e:
+            logger.error(f"[{session_name}] Group error: {e}")
+            return
         
         if not groups:
-            logger.warning(f"[{session_name}] No groups")
+            logger.warning(f"[{session_name}] No groups found")
             return
         
         while True:
             logger.info(f"[{session_name}] Cycle {len(groups)} groups")
             for g in groups:
                 try:
+                    title = g.title if hasattr(g, 'title') else str(g)
                     await client.send_message(g, MESSAGE)
+                    logger.info(f"[{session_name}] ✅ {title}")
                 except FloodWaitError as e:
+                    logger.warning(f"[{session_name}] ⏳ Flood {e.seconds}s")
                     await asyncio.sleep(e.seconds)
-                except: pass
+                except Exception as e:
+                    logger.error(f"[{session_name}] Send error: {e}")
                 await asyncio.sleep(random.randint(MIN_INTERVAL, MAX_INTERVAL))
+            logger.info(f"[{session_name}] 🔄 Waiting {CYCLE_WAIT}s...")
             await asyncio.sleep(CYCLE_WAIT)
     except Exception as e:
-        logger.error(f"[{session_name}] {e}")
+        logger.error(f"[{session_name}] Fatal: {e}")
     finally:
         await client.disconnect()
 
 
 # ============================================================
-# 🔥 মেইন (Timed Out ফিক্স)
+# 🔥 মেইন ফাংশন (Render-এর জন্য)
 # ============================================================
 
 async def main():
-    logger.info("Starting bot...")
+    logger.info("🚀 Starting bot...")
+    print("✅ Bot starting...")
     
     os.makedirs(SESSIONS_DIR, exist_ok=True)
     
-    # 🔥 আগের instance kill করার জন্য bot.json রিসেট
-    data_file_lock = f"{DATA_FILE}.lock"
-    if os.path.exists(data_file_lock):
-        os.remove(data_file_lock)
+    # 🔥 পুরনো instance মেরে ফেলার জন্য force restart
+    # ফাইল সিস্টেম ক্লিন করুন
+    for f in os.listdir('.'):
+        if f.endswith('.lock'):
+            os.remove(f)
     
     load_data()
-    logger.info(f"Loaded {len(accounts_data)} accounts")
+    logger.info(f"📊 Loaded {len(accounts_data)} accounts, {len(blocked_users)} blocked, {len(allowed_users)} allowed")
+    print(f"✅ Loaded {len(accounts_data)} accounts")
     
+    # Bot Application তৈরি করুন
     app = Application.builder().token(BOT_TOKEN).build()
+    
+    # হ্যান্ডলার যোগ করুন
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
     
+    # 🔥 গুরুত্বপূর্ণ: Initialize এবং start করুন
     await app.initialize()
     await app.start()
-    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
     
-    logger.info("✅ Bot is running!")
+    # 🔥 polling শুরু করুন (non-blocking)
+    await app.updater.start_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True  # 🔥 আগের pending updates ড্রপ করবে
+    )
     
-    # 🔥 Render Timed Out ফিক্স: HTTP endpoint তৈরি করুন
-    from aiohttp import web
+    logger.info("✅ Bot is now running! Press Ctrl+C to stop.")
+    print("✅ Bot চালু! টেলিগ্রামে /start দিন।")
     
-    async def health(request):
-        return web.Response(text="OK")
-    
-    app_web = web.Application()
-    app_web.router.add_get('/', health)
-    app_web.router.add_get('/health', health)
-    
-    # Render যে PORT দেয় সেটা ব্যবহার করুন
-    PORT = int(os.environ.get('PORT', 10000))
-    
-    runner = web.AppRunner(app_web)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
-    await site.start()
-    
-    logger.info(f"Health server on port {PORT}")
-    
+    # 🔥 Render-কে alive রাখতে periodic log
     try:
-        await asyncio.Event().wait()  # চিরকাল অপেক্ষা
+        while True:
+            await asyncio.sleep(60)  # প্রতি মিনিটে
+            logger.debug("Bot alive...")
     except asyncio.CancelledError:
         pass
+    except Exception as e:
+        logger.error(f"Main loop error: {e}")
     finally:
+        logger.info("Shutting down...")
         await app.updater.stop()
         await app.stop()
         await app.shutdown()
-        await runner.cleanup()
 
+
+# ============================================================
+# এন্ট্রি পয়েন্ট
+# ============================================================
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Stopped")
+        logger.info("⛔ Bot stopped by user")
     except Exception as e:
-        logger.error(f"Fatal: {e}")
+        logger.error(f"❌ Fatal error: {e}", exc_info=True)
+        sys.exit(1)
