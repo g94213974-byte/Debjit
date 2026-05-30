@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# mass_bot.py - সম্পূর্ণ কন্ট্রোল প্যানেল সহ ম্যাসেজিং বট (Render Fix)
+# mass_bot.py - সম্পূর্ণ কন্ট্রোল প্যানেল সহ ম্যাসেজিং বট (Render Fix v2)
 
 import os
 import json
@@ -44,7 +44,12 @@ def load_data():
         try:
             with open(DATA_FILE, 'r') as f:
                 data = json.load(f)
-                accounts_data = data.get('accounts', {})
+                # 🔥 FIX: যদি পুরনো ডাটায় 'accounts' না থাকে তাহলে খালি ডাটা ব্যবহার করো
+                if 'accounts' in data:
+                    accounts_data = data.get('accounts', {})
+                else:
+                    # পুরনো ফরম্যাটে 'mode' ইত্যাদি থাকলে ignore করো
+                    accounts_data = {}
                 blocked_users = data.get('blocked_users', [])
                 allowed_users = data.get('allowed_users', [])
                 settings = data.get('settings', {})
@@ -53,8 +58,10 @@ def load_data():
                 MAX_INTERVAL = settings.get('max_interval', MAX_INTERVAL)
                 CYCLE_WAIT = settings.get('cycle_wait', CYCLE_WAIT)
                 return data
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Data load error: {e}")
+            # ফাইল corrupted হলে নতুন তৈরি করো
+            save_data()
     return {'accounts': {}, 'settings': {}, 'blocked_users': [], 'allowed_users': []}
 
 
@@ -70,8 +77,11 @@ def save_data():
             'cycle_wait': CYCLE_WAIT
         }
     }
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
+    try:
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.error(f"Save error: {e}")
 
 
 # ============================================================
@@ -582,9 +592,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'api_hash': api_hash
         }
         
-        if not os.path.exists(SESSIONS_DIR):
-            os.makedirs(SESSIONS_DIR)
-        
+        os.makedirs(SESSIONS_DIR, exist_ok=True)
         save_data()
         context.user_data['awaiting_input'] = None
         
@@ -782,14 +790,15 @@ async def run_account(session_name):
 
 
 # ============================================================
-# 🔥 রেন্ডারের জন্য পরিবর্তিত মেইন ফাংশন
+# 🔥 রেন্ডারের জন্য মেইন ফাংশন (Timed Out ফিক্স সহ)
 # ============================================================
 
 async def main():
-    """বট চালু করুন (Render এর জন্য ফিক্সড)"""
+    """বট চালু করুন (Render Timed Out ফিক্স)"""
     global bot_app
     
     print("✅ Bot starting...")
+    logger.info("Bot initializing...")
     
     # sessions ফোল্ডার তৈরি করুন
     os.makedirs(SESSIONS_DIR, exist_ok=True)
@@ -797,6 +806,25 @@ async def main():
     # আগের ডাটা লোড করুন
     load_data()
     print(f"✅ Loaded {len(accounts_data)} accounts")
+    
+    # 🔥 প্রথমে পুরনো bot_data.json চেক করুন এবং ক্লিন করুন
+    # যদি কোনো পুরনো 'mode' বা 'account' কী থাকে, সেটা রিমুভ করো
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, 'r') as f:
+                raw = json.load(f)
+            # শুধু valid keys রাখো
+            valid_keys = ['accounts', 'blocked_users', 'allowed_users', 'settings']
+            cleaned = {k: raw[k] for k in valid_keys if k in raw}
+            # যদি 'accounts' না থাকে তাহলে {}
+            if 'accounts' not in cleaned:
+                cleaned['accounts'] = {}
+            with open(DATA_FILE, 'w') as f:
+                json.dump(cleaned, f, indent=2)
+            # পুনরায় লোড
+            load_data()
+    except Exception as e:
+        logger.warning(f"Data cleanup warning: {e}")
     
     # বট তৈরি করুন
     app = Application.builder().token(BOT_TOKEN).build()
@@ -809,18 +837,23 @@ async def main():
     bot_app = app
     
     print("✅ Bot is running!")
+    logger.info("Bot is now running!")
     
-    # 🔥 রেন্ডারের জন্য: run_polling() ফাংশনটি await করে কল করুন
+    # 🔥 রেন্ডারের জন্য: start_polling এবং keep alive
     await app.initialize()
     await app.start()
     await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
     
-    # বট চালু রাখুন (Render বন্ধ করলে বট বন্ধ হবে)
+    # 🔥 Timed Out সমস্যা সমাধান: প্রতি ৫ মিনিটে Render-কে জানাবো যে বট alive
     try:
         while True:
-            await asyncio.sleep(3600)  # প্রতি ঘন্টায় চেক
+            await asyncio.sleep(300)  # 5 মিনিট
+            # Render-এ log print করলে connection alive থাকে
+            logger.info("Bot is alive...")
     except asyncio.CancelledError:
         pass
+    except Exception as e:
+        logger.error(f"Loop error: {e}")
     finally:
         await app.updater.stop()
         await app.stop()
