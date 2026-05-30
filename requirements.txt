@@ -1,3 +1,2 @@
 telethon==1.41.1
 python-telegram-bot==22.2
-cryptg==0.5.0.post0
