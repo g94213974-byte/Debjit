@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# mass_bot.py - সম্পূর্ণ কন্ট্রোল প্যানেল সহ ম্যাসেজিং বট
+# mass_bot.py - সম্পূর্ণ কন্ট্রোল প্যানেল সহ ম্যাসেজিং বট (Render Fix)
 
 import os
 import json
@@ -19,18 +19,18 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # ====== আপনার বট টোকেন ======
-BOT_TOKEN = "8875386448:AAHhjXREES2lQYqEj-Wqv5Nlnln4e3wK0MM"  # @BotFather থেকে নিন
-OWNER_ID = 8001816524  # @userinfobot থেকে আপনার ID দিন
+BOT_TOKEN = "8875386448:AAHhjXREES2lQYqEj-Wqv5Nlnln4e3wK0MM"
+OWNER_ID = 8001816524
 
 # ====== ডাটা ফাইল ======
 DATA_FILE = "bot_data.json"
 SESSIONS_DIR = "sessions"
 
 # ====== গ্লোবাল ভেরিয়েবল ======
-running_tasks = {}  # {session_name: asyncio.Task}
-accounts_data = {}  # সেশন ডাটা স্টোর করুন
-blocked_users = []  # ব্লক করা ইউজার আইডি লিস্ট
-allowed_users = []  # অনুমোদিত ইউজার আইডি লিস্ট (খালি থাকলে সবাইকে অনুমতি)
+running_tasks = {}
+accounts_data = {}
+blocked_users = []
+allowed_users = []
 bot_app = None
 
 
@@ -39,7 +39,6 @@ bot_app = None
 # ============================================================
 
 def load_data():
-    """JSON ফাইল থেকে ডাটা লোড করুন"""
     global accounts_data, blocked_users, allowed_users, MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT
     if os.path.exists(DATA_FILE):
         try:
@@ -60,7 +59,6 @@ def load_data():
 
 
 def save_data():
-    """JSON ফাইলে ডাটা সেভ করুন"""
     data = {
         'accounts': accounts_data,
         'blocked_users': blocked_users,
@@ -92,20 +90,12 @@ EXCLUDED_GROUPS = ["Admin Group", "Private Chat"]
 # ============================================================
 
 async def is_user_allowed(user_id):
-    """চেক করুন ইউজার বট ব্যবহার করতে পারবে কিনা"""
-    # ওনার সবসময় পারবেন
     if user_id == OWNER_ID:
         return True
-    
-    # ব্লক লিস্টে থাকলে নিষেধ
     if user_id in blocked_users:
         return False
-    
-    # এলাউ লিস্ট খালি থাকলে সবাই পারবে
     if not allowed_users:
         return True
-    
-    # এলাউ লিস্টে থাকতে হবে
     return user_id in allowed_users
 
 
@@ -114,16 +104,13 @@ async def is_user_allowed(user_id):
 # ============================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """স্টার্ট কমান্ড"""
     user = update.effective_user
     user_id = user.id
     
-    # চেক করুন ইউজার অনুমোদিত কিনা
     if not await is_user_allowed(user_id):
         await update.message.reply_text("❌ আপনি এই বট ব্যবহারের জন্য অনুমোদিত নন!")
         return
     
-    # সাধারণ ইউজারদের জন্য সহজ মেনু
     if user_id != OWNER_ID:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("📊 স্ট্যাটাস দেখুন", callback_data='user_status')]
@@ -135,7 +122,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # ওনারদের জন্য সম্পূর্ণ মেনু
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 অ্যাকাউন্ট ম্যানেজ", callback_data='accounts')],
         [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
@@ -154,7 +140,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """বাটন ক্লিক হ্যান্ডলার"""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -165,12 +150,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     
-    # সাধারণ ইউজারদের জন্য স্ট্যাটাস
     if data == 'user_status':
         await show_user_status(query)
         return
     
-    # শুধু ওনারের জন্য নিচের সব অপশন
     if user_id != OWNER_ID:
         return
     
@@ -308,13 +291,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting_input'] = 'remove_allowed'
     
     elif data == 'toggle_mode':
-        # এলাউ লিস্ট অন/অফ
         if allowed_users:
             allowed_users.clear()
             save_data()
             await query.answer("✅ এখন সবাই বট ব্যবহার করতে পারবে!")
         else:
-            # ওনারকে অ্যাড করুন
             if OWNER_ID not in allowed_users:
                 allowed_users.append(OWNER_ID)
             save_data()
@@ -340,7 +321,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_user_status(query):
-    """সাধারণ ইউজারের জন্য স্ট্যাটাস"""
     await query.edit_message_text(
         "📊 *বট স্ট্যাটাস*\n\n"
         "বটটি সক্রিয় আছে এবং কাজ করছে।\n"
@@ -350,7 +330,6 @@ async def show_user_status(query):
 
 
 async def show_accounts(query):
-    """সব অ্যাকাউন্ট দেখান"""
     if not accounts_data:
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ নতুন অ্যাকাউন্ট যোগ করুন", callback_data='add_account')],
@@ -369,28 +348,21 @@ async def show_accounts(query):
     
     for session_name in accounts_data:
         is_running = session_name in running_tasks and running_tasks[session_name] is not None and not running_tasks[session_name].done()
+        icon = "🟢" if is_running else "🔴"
         status = "✅ চলছে" if is_running else "⏹️ বন্ধ"
-        if is_running:
-            text += f"• 🟢 `{session_name}` — {status}\n"
-        else:
-            text += f"• 🔴 `{session_name}` — {status}\n"
+        text += f"• {icon} `{session_name}` — {status}\n"
         keyboard.append([InlineKeyboardButton(
-            f"{'🟢' if is_running else '🔴'} {session_name}",
+            f"{icon} {session_name}",
             callback_data=f'view_{session_name}'
         )])
     
     keyboard.append([InlineKeyboardButton("➕ নতুন অ্যাকাউন্ট যোগ করুন", callback_data='add_account')])
     keyboard.append([InlineKeyboardButton("🔙 ফিরে যান", callback_data='back')])
     
-    await query.edit_message_text(
-        text,
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def view_account(query, session_name):
-    """একটি অ্যাকাউন্টের বিস্তারিত দেখান"""
     if session_name not in accounts_data:
         await query.edit_message_text("❌ অ্যাকাউন্ট পাওয়া যায়নি!")
         return
@@ -417,7 +389,6 @@ async def view_account(query, session_name):
 
 
 async def delete_account(query, session_name):
-    """অ্যাকাউন্ট ডিলিট করুন"""
     if session_name in running_tasks and running_tasks[session_name] is not None and not running_tasks[session_name].done():
         running_tasks[session_name].cancel()
         del running_tasks[session_name]
@@ -426,7 +397,6 @@ async def delete_account(query, session_name):
         del accounts_data[session_name]
         save_data()
     
-    # সেশন ফাইল ডিলিট করুন
     session_file = f"{SESSIONS_DIR}/{session_name}.session"
     if os.path.exists(session_file):
         os.remove(session_file)
@@ -436,7 +406,6 @@ async def delete_account(query, session_name):
 
 
 async def toggle_account(query, session_name):
-    """অ্যাকাউন্ট চালু/বন্ধ করুন"""
     if session_name in running_tasks and running_tasks[session_name] is not None and not running_tasks[session_name].done():
         running_tasks[session_name].cancel()
         del running_tasks[session_name]
@@ -450,7 +419,6 @@ async def toggle_account(query, session_name):
 
 
 async def show_settings(query):
-    """সেটিংস দেখান"""
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("✏️ ম্যাসেজ পরিবর্তন করুন", callback_data='edit_message')],
         [InlineKeyboardButton("⏱️ ইন্টারভাল সেটিংস", callback_data='edit_interval')],
@@ -470,7 +438,6 @@ async def show_settings(query):
 
 
 async def show_user_management(query):
-    """ইউজার ম্যানেজমেন্ট দেখান"""
     mode_text = "🔓 সবাই ব্যবহার করতে পারে" if not allowed_users else "🔒 শুধু অনুমতিপ্রাপ্ত ইউজার"
     
     text = (
@@ -506,7 +473,6 @@ async def show_user_management(query):
 
 
 async def start_all_accounts(query):
-    """সব অ্যাকাউন্ট চালু করুন"""
     if not accounts_data:
         await query.edit_message_text("❌ কোনো অ্যাকাউন্ট নেই! আগে অ্যাকাউন্ট যোগ করুন।")
         return
@@ -524,7 +490,6 @@ async def start_all_accounts(query):
 
 
 async def stop_all_accounts(query):
-    """সব অ্যাকাউন্ট বন্ধ করুন"""
     count = 0
     for session_name in list(running_tasks.keys()):
         if running_tasks[session_name] is not None and not running_tasks[session_name].done():
@@ -537,7 +502,6 @@ async def stop_all_accounts(query):
 
 
 async def show_status(query):
-    """স্ট্যাটাস দেখান"""
     text = "📊 *স্ট্যাটাস রিপোর্ট*\n\n"
     
     if not accounts_data:
@@ -574,7 +538,6 @@ async def show_status(query):
 # ============================================================
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ইউজারের টেক্সট ইনপুট হ্যান্ডল করুন"""
     user_id = update.effective_user.id
     
     if not await is_user_allowed(user_id):
@@ -586,7 +549,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not awaiting:
         return
     
-    # শুধু ওনারের জন্য সেটিংস পরিবর্তনের অপশন
     if user_id != OWNER_ID and awaiting in ['add_account', 'edit_message', 'set_min', 'set_max', 'set_cycle', 'add_blocked', 'add_allowed', 'remove_blocked', 'remove_allowed']:
         return
     
@@ -620,7 +582,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'api_hash': api_hash
         }
         
-        # sessions ফোল্ডার তৈরি করুন
         if not os.path.exists(SESSIONS_DIR):
             os.makedirs(SESSIONS_DIR)
         
@@ -821,19 +782,21 @@ async def run_account(session_name):
 
 
 # ============================================================
-# মেইন ফাংশন
+# 🔥 রেন্ডারের জন্য পরিবর্তিত মেইন ফাংশন
 # ============================================================
 
-async def main_bot():
-    """বট চালু করুন"""
+async def main():
+    """বট চালু করুন (Render এর জন্য ফিক্সড)"""
     global bot_app
     
+    print("✅ Bot starting...")
+    
     # sessions ফোল্ডার তৈরি করুন
-    if not os.path.exists(SESSIONS_DIR):
-        os.makedirs(SESSIONS_DIR)
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
     
     # আগের ডাটা লোড করুন
     load_data()
+    print(f"✅ Loaded {len(accounts_data)} accounts")
     
     # বট তৈরি করুন
     app = Application.builder().token(BOT_TOKEN).build()
@@ -845,16 +808,33 @@ async def main_bot():
     
     bot_app = app
     
-    logger.info("✅ Bot started!")
-    print("✅ Bot চালু! টেলিগ্রামে আপনার বটে /start দিন।")
+    print("✅ Bot is running!")
     
-    # বট চালু করুন
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # 🔥 রেন্ডারের জন্য: run_polling() ফাংশনটি await করে কল করুন
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # বট চালু রাখুন (Render বন্ধ করলে বট বন্ধ হবে)
+    try:
+        while True:
+            await asyncio.sleep(3600)  # প্রতি ঘন্টায় চেক
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
 
+
+# ============================================================
+# 🔥 এন্ট্রি পয়েন্ট
+# ============================================================
 
 if __name__ == "__main__":
     try:
-        import asyncio
-        asyncio.get_event_loop().run_until_complete(main_bot())
+        asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("⛔ Bot stopped by user")
+    except Exception as e:
+        logger.error(f"❌ Fatal error: {e}")
