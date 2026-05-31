@@ -12,27 +12,27 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ====== ENVIRONMENT VARIABLES থেকে পড়ুন ======
-BOT_TOKEN = os.environ.get("8875386448:AAH2RMJixaVOyLPZkYJayh3WcGVrc5octnA")
-OWNER_ID = int(os.environ.get("8001816524", "0"))
-API_ID = int(os.environ.get("36952100", "0"))
-API_HASH = os.environ.get("21c793e15e6ceef225eeb83e5727d446", "")
-SESSION_STRING = os.environ.get("1BVtsOL8Bu2KY_DAs-8av9yWTcpEhFTl3qS72FJp08HyrzwwdCNBw-liieDLN9qj8uFIrccHBFDbDkC3HkmBOJVb698J7zNWGTtq251zfMw6ja4acc5T5OBAc8_xdADt5peeSHIur84v1uU_hCXXeuhs9ixwwOLDB6N7EF4uc3MmYomfsDwCzaptaOO3gcOKJr29hjvpSYKmaDz_tdAQ_LYsnEb1BqXk5OZqsLmTaXH7qqbqrGRMP6mTVBCLf6iUUOgbwe8H7UIdu2idb2SzDZmLSLscYzauci9PzPTsc26K6QXdtCVM4b7jmCrEeuq4nHL8N6Bgyp2l1qPS2Dl798UnDflxAcc4=", "")
-MESSAGE = os.environ.get("MESSAGE", "Hello everyone!")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
+API_ID = int(os.environ.get("API_ID", "0"))
+API_HASH = os.environ.get("API_HASH", "")
+SESSION_STRING = os.environ.get("SESSION_STRING", "")
+MESSAGE = os.environ.get("MESSAGE", "𝟭𝟬 𝗠𝗜𝗡 𝗩𝗖 ₹𝟰𝟵 𝗕𝗔𝗕𝗬😘")
 MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "1"))
 MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "2"))
 CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "15"))
 # ==============================================
 
-if not all([BOT_TOKEN, OWNER_ID, API_ID, API_HASH, SESSION_STRING]):
+if not all([8875386448:AAH2RMJixaVOyLPZkYJayh3WcGVrc5octnA, 8001816524, 36952100, 21c793e15e6ceef225eeb83e5727d446, 1BVtsOL8Bu2KY_DAs-8av9yWTcpEhFTl3qS72FJp08HyrzwwdCNBw-liieDLN9qj8uFIrccHBFDbDkC3HkmBOJVb698J7zNWGTtq251zfMw6ja4acc5T5OBAc8_xdADt5peeSHIur84v1uU_hCXXeuhs9ixwwOLDB6N7EF4uc3MmYomfsDwCzaptaOO3gcOKJr29hjvpSYKmaDz_tdAQ_LYsnEb1BqXk5OZqsLmTaXH7qqbqrGRMP6mTVBCLf6iUUOgbwe8H7UIdu2idb2SzDZmLSLscYzauci9PzPTsc26K6QXdtCVM4b7jmCrEeuq4nHL8N6Bgyp2l1qPS2Dl798UnDflxAcc4=]):
     print("❌ ERROR: Environment variables missing!")
+    print("Required: BOT_TOKEN, OWNER_ID, API_ID, API_HASH, SESSION_STRING")
     sys.exit(1)
 
 running_task = None
 
 async def get_client():
-    """OTP ছাড়া সরাসরি লগইন হবে SESSION_STRING ব্যবহার করে"""
     client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
-    await client.start()  # NO OTP needed!
+    await client.start()
     me = await client.get_me()
     logger.info(f"✅ Logged in: {me.first_name}")
     return client
@@ -133,7 +133,6 @@ async def button_handler(update: Update, context):
 async def main():
     logger.info("🚀 বট শুরু হচ্ছে...")
     
-    # Verify session works
     try:
         client = await get_client()
         await client.disconnect()
