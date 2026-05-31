@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# mass_bot_v8.py - FINAL (OTP Fix + Login through Bot)
+# mass_bot_v8.py - FINAL (Direct Login + Pre-set API)
 
 import os
 import sys
-import json
+ import json
 import asyncio
 import random
 import logging
@@ -44,7 +44,7 @@ OWNER_ID = 8001816524
 PRESET_API_CREDENTIALS = [
     {"api_id": 34124317, "api_hash": "b6a4101c735dda0625454c22b579d702"},      # API set 1
     {"api_id": 37362415, "api_hash": "88f99afa3b9a81adce62267b701e7b9f"},      # API set 2
-    {"api_id": 37362415, "api_hash": "88f99afa3b9a81adce62267b701e7b9f"},      # API set 3
+    {"api_id": 36952100, "api_hash": "21c793e15e6ceef225eeb83e5727d446"},      # API set 3
 ]
 # ============================================================
 
@@ -206,6 +206,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 অ্যাকাউন্ট", callback_data='accounts')],
+        [InlineKeyboardButton("➕ সরাসরি যোগ ও লগইন", callback_data='add_and_login')],
         [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
         [InlineKeyboardButton("🔒 ইউজার", callback_data='user_manage')],
         [InlineKeyboardButton("▶️ সব চালু", callback_data='start_all')],
@@ -248,6 +249,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔑 প্রি-সেট API অটো ব্যবহার হবে\n\n"
             "ফরম্যাট:\n`নাম,ফোন`\n\n"
             "উদাহরণ:\n`acc1,+8801712345678`\n\n"
+            "⚠️ শুধু যোগ হবে, লগইন হবে না। আলাদাভাবে OTP দিতে হবে।\n\n"
+            "'বাতিল' বাতিল করতে।",
+            parse_mode='Markdown'
+        )
+    elif data == 'add_and_login':
+        context.user_data['awaiting_input'] = 'add_and_login'
+        await query.edit_message_text(
+            f"📱 *সরাসরি যোগ ও লগইন*\n\n"
+            f"🔑 প্রি-সেট API অটো ব্যবহার হবে\n\n"
+            "একবারেই একাউন্ট যোগ + OTP লগইন সম্পন্ন হবে!\n\n"
+            "ফরম্যাট:\n`নাম,ফোন`\n\n"
+            "উদাহরণ:\n`acc1,+8801712345678`\n\n"
+            "তারপর OTP কোড দিয়ে লগইন হবে।\n\n"
             "'বাতিল' বাতিল করতে।",
             parse_mode='Markdown'
         )
@@ -294,7 +308,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔢 *OTP দিন*\n\nএকাউন্ট: `{sn}`\n\n"
             f"টেলিগ্রাম অ্যাপে যে **5 ডিজিটের কোড** এসেছে, সেটি লিখুন:\n\n"
             f"যেমন: `12345`\n\n"
-            f"⚠️ কোডটি টেলিগ্রামের 'Telegram' নামের অ্যাপে আসবে (Telegram X বা অন্য ক্লায়েন্টে নয়)\n\n"
             f"'বাতিল' লিখে বাতিল করুন।",
             parse_mode='Markdown'
         )
@@ -398,6 +411,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total = len(accounts_data)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("👥 অ্যাকাউন্ট", callback_data='accounts')],
+            [InlineKeyboardButton("➕ সরাসরি যোগ ও লগইন", callback_data='add_and_login')],
             [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
             [InlineKeyboardButton("🔒 ইউজার", callback_data='user_manage')],
             [InlineKeyboardButton("▶️ সব চালু", callback_data='start_all')],
@@ -424,7 +438,8 @@ async def show_accounts(query):
     if not accounts_data:
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ একক যোগ", callback_data='add_account'),
-             InlineKeyboardButton("📋 একসাথে", callback_data='add_bulk')],
+             InlineKeyboardButton("➕ সরাসরি লগইন", callback_data='add_and_login')],
+            [InlineKeyboardButton("📋 একসাথে", callback_data='add_bulk')],
             [InlineKeyboardButton("🔙 ফিরে", callback_data='back')]
         ])
         await query.edit_message_text(
@@ -452,8 +467,9 @@ async def show_accounts(query):
     kb = []
     for sn in accounts_list[:5]:
         kb.append([InlineKeyboardButton(f"👁️ {sn}", callback_data=f'view_{sn}')])
-    kb.append([InlineKeyboardButton("➕ যোগ", callback_data='add_account'),
-               InlineKeyboardButton("📋 বাল্ক", callback_data='add_bulk')])
+    kb.append([InlineKeyboardButton("➕ একক যোগ", callback_data='add_account'),
+               InlineKeyboardButton("➕ সরাসরি লগইন", callback_data='add_and_login')])
+    kb.append([InlineKeyboardButton("📋 বাল্ক", callback_data='add_bulk')])
     kb.append([InlineKeyboardButton("🔑 API সেট দেখুন", callback_data='view_api_creds')])
     kb.append([InlineKeyboardButton("🔙 ফিরে", callback_data='back')])
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
@@ -511,7 +527,6 @@ async def send_otp_process(query, sn):
     await query.edit_message_text(f"📱 *OTP পাঠানো হচ্ছে...*\n\nফোন: `{phone}`\nঅপেক্ষা করুন...", parse_mode='Markdown')
     
     try:
-        # আগের কোন pending_otp থাকলে তা ক্লিন করুন
         if sn in pending_otp:
             try:
                 await pending_otp[sn]['client'].disconnect()
@@ -533,17 +548,11 @@ async def send_otp_process(query, sn):
             await client.disconnect()
             return
         
-        # কোড রিকোয়েস্ট - send_code_request কল
         result = await client.send_code_request(phone)
         
-        # সঠিকভাবে phone_code_hash সংরক্ষণ
         pending_otp[sn] = {
-            'client': client,
-            'phone': phone,
-            'phone_code_hash': result.phone_code_hash,
-            'phone_code_hash_str': str(result.phone_code_hash),  # স্ট্রিং ভার্সন
-            'api_id': api_id,
-            'api_hash': api_hash
+            'client': client, 'phone': phone, 'phone_code_hash': result.phone_code_hash,
+            'api_id': api_id, 'api_hash': api_hash
         }
         
         logger.info(f"[{sn}] OTP পাঠানো হয়েছে: phone_code_hash={result.phone_code_hash}")
@@ -559,7 +568,6 @@ async def send_otp_process(query, sn):
             f"একাউন্ট: `{sn}`\n"
             f"ফোন: `{phone}`\n\n"
             f"📩 টেলিগ্রাম অ্যাপে 5 ডিজিটের কোড এসেছে\n"
-            f"⚠️ কোডটি **'Telegram'** নামের অ্যাপে চেক করুন (Telegram X নয়)\n\n"
             f"🔽 নিচের বাটনে ক্লিক করে কোড লিখুন:",
             parse_mode='Markdown', reply_markup=kb
         )
@@ -648,7 +656,7 @@ async def show_settings(query):
 
 
 # ============================================================
-# 🔥 ফিক্সড টেক্সট হ্যান্ডলার - OTP ভেরিফিকেশন 🔥
+# টেক্সট হ্যান্ডলার - ডাইরেক্ট লগইন সিস্টেম সহ
 # ============================================================
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -659,10 +667,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     awaiting = context.user_data.get('awaiting_input')
     
-    # ====== OTP CODE INPUT (ফিক্সড) ======
+    # ====== OTP CODE INPUT ======
     if awaiting and awaiting.startswith('otp_code_') and user_id == OWNER_ID:
         sn = awaiting.replace('otp_code_', '')
-        
         if text.lower() == 'বাতিল':
             if sn in pending_otp:
                 try:
@@ -675,32 +682,22 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         code = text.strip()
-        
         if sn in pending_otp:
             login_data = pending_otp[sn]
             client = login_data['client']
             phone = login_data['phone']
             phone_code_hash = login_data['phone_code_hash']
             
-            await update.message.reply_text("⏳ ভেরিফাই করা হচ্ছে... দয়া করে অপেক্ষা করুন...")
+            await update.message.reply_text("⏳ ভেরিফাই করা হচ্ছে...")
             
             try:
-                # 🔥 ফিক্স: সরাসরি sign_in ব্যবহার করছি সঠিক প্যারামিটার সহ
-                # phone_code_hash অবশ্যই send_code_request থেকে পাওয়া আসল hash হতে হবে
-                user = await client.sign_in(
-                    phone=phone,
-                    code=code,
-                    phone_code_hash=phone_code_hash
-                )
-                
+                await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
                 me = await client.get_me()
                 cred_idx = api_cred_index.get(sn, 0)
-                logger.info(f"✅ [{sn}] OTP লগইন সফল! {me.first_name} (phone_code_hash={phone_code_hash})")
+                logger.info(f"✅ [{sn}] OTP লগইন সফল! {me.first_name}")
                 
                 account_health[sn] = {'status': 'ok', 'user': me.first_name, 'last_check': datetime.now().isoformat()}
                 save_data()
-                
-                # ক্লায়েন্ট ডিসকানেক্ট করবেন না - session ফাইল সেভ হয়েছে
                 if sn in pending_otp:
                     del pending_otp[sn]
                 context.user_data['awaiting_input'] = None
@@ -713,70 +710,23 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"এখন অ্যাকাউন্ট > ভিউ > ▶️ চালু করুন 🚀",
                     parse_mode='Markdown'
                 )
-                
             except SessionPasswordNeededError:
-                # 2FA প্রয়োজন
                 context.user_data['awaiting_input'] = f'2fa_code_{sn}'
-                await update.message.reply_text(
-                    "🔑 *2FA পাসওয়ার্ড প্রয়োজন!*\n\n"
-                    "এই একাউন্টে টু-ফ্যাক্টর অথেনটিকেশন চালু আছে।\n"
-                    "পাসওয়ার্ড দিন:",
-                    parse_mode='Markdown'
-                )
-                
+                await update.message.reply_text("🔑 *2FA পাসওয়ার্ড প্রয়োজন!*\n\nপাসওয়ার্ড দিন:", parse_mode='Markdown')
             except PhoneCodeInvalidError:
-                await update.message.reply_text(
-                    "❌ *OTP ভুল!*\n\n"
-                    "আপনি ভুল কোড দিয়েছেন। নিচের বিষয়গুলো চেক করুন:\n"
-                    "1. টেলিগ্রামের 'Telegram' অ্যাপে (Telegram X নয়) আসা কোডটি ব্যবহার করুন\n"
-                    "2. কোডটি সাধারণত 5 ডিজিটের হয় (যেমন: 12345)\n"
-                    "3. কোড একবার ব্যবহারের পর আর কাজ করে না - আবার OTP পাঠান\n\n"
-                    "'OTP দিন' বাটনে ক্লিক করে আবার চেষ্টা করুন।",
-                    parse_mode='Markdown'
-                )
-                
+                await update.message.reply_text("❌ *OTP ভুল!*\n\nসঠিক 5 ডিজিটের কোড দিন। 'OTP দিন' বাটনে ক্লিক করে আবার চেষ্টা করুন।", parse_mode='Markdown')
             except PhoneCodeExpiredError:
-                await update.message.reply_text(
-                    "❌ *OTP মেয়াদ শেষ!*\n\n"
-                    "কোডটি ৩০ সেকেন্ডের বেশি পুরনো।\n"
-                    "আবার 'OTP পাঠান' বাটনে ক্লিক করে নতুন কোড নিন।",
-                    parse_mode='Markdown'
-                )
-                
+                await update.message.reply_text("❌ *OTP মেয়াদ শেষ!*\n\nআবার 'OTP পাঠান' বাটনে ক্লিক করে নতুন কোড নিন।", parse_mode='Markdown')
             except Exception as e:
                 error_msg = str(e)
                 logger.error(f"[{sn}] OTP error: {error_msg}")
-                
                 if 'CODE_INVALID' in error_msg:
-                    await update.message.reply_text(
-                        "❌ *OTP ভুল!*\n\n"
-                        "আপনি ভুল কোড দিয়েছেন। আবার চেষ্টা করুন:\n"
-                        "1. 'OTP দিন' বাটনে ক্লিক করুন\n"
-                        "2. সঠিক 5 ডিজিটের কোড লিখুন",
-                        parse_mode='Markdown'
-                    )
-                elif 'PHONE_CODE' in error_msg:
-                    await update.message.reply_text(
-                        f"❌ OTP ভেরিফিকেশন ব্যর্থ: {error_msg}\n\n"
-                        f"আবার 'OTP পাঠান' দিয়ে নতুন কোড নিন।",
-                        parse_mode='Markdown'
-                    )
-                    # পুরনো pending_otp ক্লিন
-                    try:
-                        await client.disconnect()
-                    except:
-                        pass
-                    if sn in pending_otp:
-                        del pending_otp[sn]
-                    context.user_data['awaiting_input'] = None
+                    await update.message.reply_text("❌ *OTP ভুল!*\n\nআবার চেষ্টা করুন।", parse_mode='Markdown')
                 else:
-                    await update.message.reply_text(f"❌ ত্রুটি: {error_msg}\n\nআবার চেষ্টা করুন।")
+                    await update.message.reply_text(f"❌ ত্রুটি: {error_msg}")
             return
         else:
-            await update.message.reply_text(
-                "❌ OTP সেশন নেই বা মেয়াদ শেষ!\n\n"
-                "অ্যাকাউন্ট > ভিউ > OTP পাঠান দিয়ে নতুন করে শুরু করুন।"
-            )
+            await update.message.reply_text("❌ OTP সেশন নেই!\n\nঅ্যাকাউন্ট > ভিউ > OTP পাঠান দিয়ে নতুন করে শুরু করুন।")
             context.user_data['awaiting_input'] = None
             return
     
@@ -805,10 +755,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 save_data()
                 del pending_otp[sn]
                 context.user_data['awaiting_input'] = None
-                await update.message.reply_text(
-                    f"✅ *2FA লগইন সফল!*\n\nএকাউন্ট: `{sn}`\nএখন ▶️ চালু করুন 🚀",
-                    parse_mode='Markdown'
-                )
+                await update.message.reply_text(f"✅ *2FA লগইন সফল!*\n\nএকাউন্ট: `{sn}`\nএখন ▶️ চালু করুন 🚀", parse_mode='Markdown')
             except Exception as e:
                 await update.message.reply_text(f"❌ 2FA ভুল: {e}\n\nআবার চেষ্টা করুন।")
             return
@@ -825,6 +772,106 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT
     
+    # ========== ডাইরেক্ট লগইন - একবারেই একাউন্ট যোগ + OTP ==========
+    if awaiting == 'add_and_login':
+        if text.lower() == 'বাতিল':
+            context.user_data['awaiting_input'] = None
+            await update.message.reply_text("✅ বাতিল")
+            return
+        
+        parts = text.split(',')
+        if len(parts) != 2:
+            await update.message.reply_text(
+                "❌ ফরম্যাট: `নাম,ফোন`\nযেমন: `acc1,+8801712345678`",
+                parse_mode='Markdown'
+            )
+            return
+        
+        sn = parts[0].strip()
+        phone = parts[1].strip()
+        
+        if not phone.startswith('+'):
+            await update.message.reply_text("❌ ফোন + দিয়ে শুরু হবে!")
+            return
+        
+        if sn in accounts_data:
+            await update.message.reply_text("❌ এই নামে আগে আছে! আলাদা নাম দিন।")
+            return
+        
+        # API অটো অ্যাসাইন
+        cred = get_next_api_credentials()
+        actual_idx = (_next_api_index - 1) % len(PRESET_API_CREDENTIALS)
+        
+        # একাউন্ট সেভ
+        accounts_data[sn] = {'phone': phone, 'api_id': cred['api_id'], 'api_hash': cred['api_hash']}
+        api_cred_index[sn] = actual_idx
+        os.makedirs(SESSIONS_DIR, exist_ok=True)
+        save_data()
+        
+        await update.message.reply_text(
+            f"✅ *একাউন্ট যোগ!*\n\n"
+            f"নাম: `{sn}`\nফোন: `{phone}`\n"
+            f"🔑 API সেট: {actual_idx+1} (ID: `{cred['api_id']}`)\n\n"
+            f"📱 এখন OTP পাঠানো হচ্ছে... দয়া করে অপেক্ষা করুন...",
+            parse_mode='Markdown'
+        )
+        
+        # 🔥 অটোমেটিক OTP পাঠান
+        try:
+            client = TelegramClient(f"{SESSIONS_DIR}/{sn}", cred['api_id'], cred['api_hash'])
+            await client.connect()
+            
+            if await client.is_user_authorized():
+                me = await client.get_me()
+                account_health[sn] = {'status': 'ok', 'user': me.first_name, 'last_check': datetime.now().isoformat()}
+                save_data()
+                context.user_data['awaiting_input'] = None
+                await update.message.reply_text(
+                    f"✅ *ইতিমধ্যে লগইন!*\n\nএকাউন্ট: `{sn}`\nব্যবহারকারী: {me.first_name}\n\nএখন অ্যাকাউন্ট > ভিউ > ▶️ চালু করুন 🚀",
+                    parse_mode='Markdown'
+                )
+                await client.disconnect()
+                return
+            
+            # OTP পাঠান
+            result = await client.send_code_request(phone)
+            
+            pending_otp[sn] = {
+                'client': client, 'phone': phone, 'phone_code_hash': result.phone_code_hash,
+                'api_id': cred['api_id'], 'api_hash': cred['api_hash']
+            }
+            
+            logger.info(f"[{sn}] ডাইরেক্ট লগইন OTP পাঠানো হয়েছে: phone_code_hash={result.phone_code_hash}")
+            
+            # কীবোর্ড বাটন সহ মেসেজ
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔢 OTP দিন", callback_data=f'enter_otp_{sn}')],
+                [InlineKeyboardButton("🔑 2FA", callback_data=f'enter_2fa_{sn}')],
+                [InlineKeyboardButton("❌ বাতিল", callback_data=f'cancel_otp_{sn}')]
+            ])
+            
+            await update.message.reply_text(
+                f"✅ *OTP পাঠানো হয়েছে!*\n\n"
+                f"একাউন্ট: `{sn}`\n"
+                f"ফোন: `{phone}`\n"
+                f"🔑 API সেট: {actual_idx+1}\n\n"
+                f"📩 টেলিগ্রাম অ্যাপে 5 ডিজিটের কোড এসেছে\n"
+                f"🔽 নিচের বাটনে ক্লিক করে কোড লিখুন:",
+                parse_mode='Markdown', reply_markup=kb
+            )
+            
+            context.user_data['awaiting_input'] = None  # awaiting_input ক্লিয়ার, কারণ OTP বাটন দিয়ে যাবে
+            
+        except Exception as e:
+            logger.error(f"[{sn}] ডাইরেক্ট লগইন OTP error: {e}")
+            await update.message.reply_text(
+                f"❌ OTP পাঠাতে ব্যর্থ: {e}\n\n"
+                f"তবে একাউন্ট যোগ হয়েছে! অ্যাকাউন্ট > ভিউ > ম্যানুয়ালি OTP পাঠান।"
+            )
+        
+        return
+    
+    # ========== সাধারণ একাউন্ট যোগ (পুরনো পদ্ধতি) ==========
     if awaiting == 'add_account':
         if text.lower() == 'বাতিল':
             context.user_data['awaiting_input'] = None
@@ -832,10 +879,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         parts = text.split(',')
         if len(parts) != 2:
-            await update.message.reply_text(
-                "❌ ফরম্যাট: `নাম,ফোন`\nযেমন: `acc1,+8801712345678`",
-                parse_mode='Markdown'
-            )
+            await update.message.reply_text("❌ ফরম্যাট: `নাম,ফোন`\nযেমন: `acc1,+8801712345678`", parse_mode='Markdown')
             return
         sn, phone = parts[0].strip(), parts[1].strip()
         if not phone.startswith('+'):
@@ -857,7 +901,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"নাম: `{sn}`\nফোন: `{phone}`\n"
             f"🔑 API সেট: {actual_idx+1} (ID: `{cred['api_id']}`)\n\n"
             f"এখন অ্যাকাউন্ট > ভিউ > OTP পাঠান এ ক্লিক করুন।\n"
-            f"তারপর ওই নম্বরে আসা OTP বটে লিখে দিন।\n/start করুন",
+            f"অথবা সরাসরি যোগ ও লগইন ব্যবহার করুন।\n/start করুন",
             parse_mode='Markdown'
         )
     elif awaiting == 'add_bulk':
@@ -894,7 +938,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply = f"✅ {added} টি যোগ! (মোট: {len(accounts_data)}টি)\n\n"
         if errors:
             reply += "ত্রুটি:\n" + '\n'.join(errors) + '\n\n'
-        reply += "/start করুন"
+        reply += "প্রতি একাউন্টে OTP দিতে অ্যাকাউন্ট > ভিউ > OTP পাঠান করুন।\n/start করুন"
         await update.message.reply_text(reply)
     elif awaiting == 'edit_message':
         MESSAGE = text
@@ -1187,7 +1231,7 @@ async def main():
 ╔══════════════════════════════════════════════════════════╗
 ║   📱 ম্যাসেজিং বট v8 - আনলিমিটেড + নো লগআউট          ║
 ║   🔑 3টি প্রি-সেট API - শুধু নাম ও ফোন দিন!           ║
-║   📱 OTP বটের মাধ্যমেই দিন - বাহিরে যেতে হবে না        ║
+║   📱 ডাইরেক্ট লগইন - একবারেই একাউন্ট + OTP            ║
 ╚══════════════════════════════════════════════════════════╝
     """)
     logger.info("🚀 শুরু হচ্ছে...")
@@ -1213,12 +1257,12 @@ async def main():
     asyncio.create_task(health_check_all_accounts())
     
     print(f"\n✅ বট চালু! /start দিন কন্ট্রোল বটে")
-    print(f"📱 কিভাবে একাউন্ট যোগ করবেন:")
-    print(f"   1. /start > অ্যাকাউন্ট > একক যোগ")
-    print(f"   2. লিখুন: acc1,+8801712345678")
-    print(f"   3. অ্যাকাউন্ট > ভিউ > OTP পাঠান")
-    print(f"   4. আপনার ফোনে OTP আসবে, সেটি বটে লিখুন")
-    print(f"   5. লগইন হয়ে যাবে! ▶️ চালু করুন 🚀")
+    print(f"📱 দুইভাবে একাউন্ট যোগ করতে পারবেন:")
+    print(f"   1. ডাইরেক্ট লগইন (প্রস্তাবিত):")
+    print(f"      /start > সরাসরি যোগ ও লগইন > acc1,+8801712345678")
+    print(f"      তারপর OTP কোড বটে লিখুন - একবারেই লগইন!")
+    print(f"   2. সাধারণ যোগ:")
+    print(f"      /start > অ্যাকাউন্ট > একক যোগ > তারপর ম্যানুয়ালি OTP")
     
     try:
         while True:
