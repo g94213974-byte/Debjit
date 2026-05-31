@@ -7,7 +7,6 @@ import json
 import asyncio
 import random
 import logging
-import threading
 from datetime import datetime
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -16,22 +15,6 @@ from telethon.tl.functions.messages import GetDialogsRequest
 from telethon.tl.types import InputPeerEmpty
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-from flask import Flask
-
-# ====== Flask HTTP Keep-Alive ======
-flask_app = Flask(__name__)
-@flask_app.route("/")
-def home():
-    return "Bot is alive and running 24/7!"
-@flask_app.route("/health")
-def health():
-    return "OK"
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    flask_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-flask_thread = threading.Thread(target=run_flask, daemon=True)
-flask_thread.start()
-# ===================================
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger(__name__)
@@ -218,13 +201,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(f"📊 স্ট্যাটাস ({running}/{total})", callback_data='status')]
     ])
     await update.message.reply_text(
-        f"🤖 *ম্যাসেজিং বট v9*\n\n"
-        f"🔥 আনলিমিটেড অ্যাকাউন্ট\n"
-        f"🔑 {len(PRESET_API_CREDENTIALS)}টি প্রি-সেট API\n"
-        f"⚡ {MIN_INTERVAL}-{MAX_INTERVAL}s · সাইকেল {CYCLE_WAIT}s\n"
-        f"📊 চলছে: {running}/{total} | হেলদি: {healthy}\n"
-        f"💾 .session ফাইল: {len(session_files)}টি\n"
-        f"🔑 StringSession: {len(SESSION_STRINGS)}টি",
+        f"🤖 *ম্যাসেজিং বট v9*\n\n🔥 আনলিমিটেড অ্যাকাউন্ট\n🔑 {len(PRESET_API_CREDENTIALS)}টি প্রি-সেট API\n⚡ {MIN_INTERVAL}-{MAX_INTERVAL}s · সাইকেল {CYCLE_WAIT}s\n📊 চলছে: {running}/{total} | হেলদি: {healthy}\n💾 .session ফাইল: {len(session_files)}টি\n🔑 StringSession: {len(SESSION_STRINGS)}টি",
         parse_mode='Markdown', reply_markup=kb
     )
 
@@ -248,20 +225,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == 'add_account':
         context.user_data['awaiting_input'] = 'add_account'
         await query.edit_message_text(
-            f"📱 *একাউন্ট যোগ (মোট: {len(accounts_data)}টি)*\n\n"
-            f"🔑 প্রি-সেট API অটো ব্যবহার হবে\n\n"
-            "ফরম্যাট:\n`নাম,ফোন`\n\n"
-            "উদাহরণ:\n`acc1,+8801712345678`\n\n"
-            "'বাতিল' বাতিল করতে।",
+            f"📱 *একাউন্ট যোগ (মোট: {len(accounts_data)}টি)*\n\n🔑 প্রি-সেট API অটো ব্যবহার হবে\n\nফরম্যাট:\n`নাম,ফোন`\n\nউদাহরণ:\n`acc1,+8801712345678`\n\n'বাতিল' বাতিল করতে।",
             parse_mode='Markdown'
         )
     elif data == 'add_bulk':
         context.user_data['awaiting_input'] = 'add_bulk'
         await query.edit_message_text(
-            f"📱 *একসাথে যোগ*\n\n"
-            "প্রতি লাইনে:\n`নাম,ফোন`\n\n"
-            "```\nacc1,+8801712345678\nacc2,+8801712345679\n```\n\n"
-            "শুধু নাম ও ফোন! API ID/HASH লাগবে না।\n'বাতিল' বাতিল।",
+            f"📱 *একসাথে যোগ*\n\nপ্রতি লাইনে:\n`নাম,ফোন`\n\n```\nacc1,+8801712345678\nacc2,+8801712345679\n```\n\nশুধু নাম ও ফোন! API ID/HASH লাগবে না।\n'বাতিল' বাতিল।",
             parse_mode='Markdown'
         )
     elif data == 'view_api_creds':
@@ -295,10 +265,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sn = data.replace('enter_otp_', '')
         context.user_data['awaiting_input'] = f'otp_code_{sn}'
         await query.edit_message_text(
-            f"🔢 *OTP দিন*\n\nএকাউন্ট: `{sn}`\n\n"
-            f"টেলিগ্রাম অ্যাপে যে **5 ডিজিটের কোড** এসেছে, সেটি লিখুন:\n\n"
-            f"যেমন: `12345`\n\n"
-            f"'বাতিল' লিখে বাতিল করুন।",
+            f"🔢 *OTP দিন*\n\nএকাউন্ট: `{sn}`\n\nটেলিগ্রাম অ্যাপে যে **5 ডিজিটের কোড** এসেছে, সেটি লিখুন:\n\nযেমন: `12345`\n\n'বাতিল' লিখে বাতিল করুন।",
             parse_mode='Markdown'
         )
     elif data.startswith('enter_2fa_'):
@@ -431,8 +398,7 @@ async def show_accounts(query):
             [InlineKeyboardButton("🔙 ফিরে", callback_data='back')]
         ])
         await query.edit_message_text(
-            "📭 *কোন অ্যাকাউন্ট নেই*\n\n"
-            "🔑 প্রি-সেট API অটো ব্যবহার হবে।\nশুধু নাম ও ফোন দিন!",
+            "📭 *কোন অ্যাকাউন্ট নেই*\n\n🔑 প্রি-সেট API অটো ব্যবহার হবে।\nশুধু নাম ও ফোন দিন!",
             parse_mode='Markdown', reply_markup=kb
         )
         return
@@ -509,9 +475,7 @@ async def send_otp_process(query, sn):
     api_id = acc['api_id']
     api_hash = acc['api_hash']
     await query.edit_message_text(
-        f"📱 *OTP পাঠানো হচ্ছে...*\n\n"
-        f"ফোন: `{phone}`\n"
-        f"অপেক্ষা করুন... ⏳",
+        f"📱 *OTP পাঠানো হচ্ছে...*\n\nফোন: `{phone}`\nঅপেক্ষা করুন... ⏳",
         parse_mode='Markdown'
     )
     try:
@@ -539,11 +503,7 @@ async def send_otp_process(query, sn):
                 save_data()
                 await client.disconnect()
                 await query.edit_message_text(
-                    f"✅ *ইতিমধ্যে লগইন!*\n\n"
-                    f"একাউন্ট: `{sn}`\n"
-                    f"ব্যবহারকারী: {me.first_name}\n"
-                    f"💾 `.session` ফাইল: `{sn}.session` ✅\n\n"
-                    f"এখন ▶️ চালু করুন।",
+                    f"✅ *ইতিমধ্যে লগইন!*\n\nএকাউন্ট: `{sn}`\nব্যবহারকারী: {me.first_name}\n💾 `.session` ফাইল: `{sn}.session` ✅\n\nএখন ▶️ চালু করুন।",
                     parse_mode='Markdown'
                 )
                 return
@@ -567,14 +527,7 @@ async def send_otp_process(query, sn):
             [InlineKeyboardButton("❌ বাতিল", callback_data=f'cancel_otp_{sn}')]
         ])
         await query.edit_message_text(
-            f"✅ *OTP পাঠানো হয়েছে!*\n\n"
-            f"একাউন্ট: `{sn}`\n"
-            f"ফোন: `{phone}`\n"
-            f"🔑 API সেট: {api_cred_index.get(sn, 0)+1}\n\n"
-            f"📩 টেলিগ্রাম অ্যাপে **5 ডিজিটের** কোড এসেছে\n"
-            f"🔽 নিচের বাটনে ক্লিক করে কোড লিখুন:\n\n"
-            f"💾 *এটি `.session` ফাইল ব্যবহার করবে*\n"
-            f"⚠️ *এই session আর কখনো লগআউট হবে না!*",
+            f"✅ *OTP পাঠানো হয়েছে!*\n\nএকাউন্ট: `{sn}`\nফোন: `{phone}`\n🔑 API সেট: {api_cred_index.get(sn, 0)+1}\n\n📩 টেলিগ্রাম অ্যাপে **5 ডিজিটের** কোড এসেছে\n🔽 নিচের বাটনে ক্লিক করে কোড লিখুন:\n\n💾 *এটি `.session` ফাইল ব্যবহার করবে*\n⚠️ *এই session আর কখনো লগআউট হবে না!*",
             parse_mode='Markdown', reply_markup=kb
         )
     except FloodWaitError as e:
@@ -668,7 +621,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     awaiting = context.user_data.get('awaiting_input')
     
-    # OTP CODE INPUT
     if awaiting and awaiting.startswith('otp_code_') and user_id == OWNER_ID:
         sn = awaiting.replace('otp_code_', '')
         if text.lower() == 'বাতিল':
@@ -729,7 +681,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['awaiting_input'] = None
         return
     
-    # 2FA PASSWORD INPUT
     if awaiting and awaiting.startswith('2fa_code_') and user_id == OWNER_ID:
         sn = awaiting.replace('2fa_code_', '')
         if text.lower() == 'বাতিল':
@@ -804,7 +755,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data()
         context.user_data['awaiting_input'] = None
         await update.message.reply_text(
-            f"✅ *যোগ! (মোট: {len(accounts_data)}টি)*\n\nনাম: `{sn}`\nফোন: `{phone}`\n🔑 API সেট: {actual_idx+1} (ID: `{cred['api_id']}`)\n\nএখন অ্যাকাউন্ট > ভিউ > OTP পাঠান এ ক্লিক করুন।\nতারপর ওই নম্বরে আসা OTP বটে লিখে দিন।\n💾 *`.session` ফাইল সেভ হবে - লগআউট হবে না!*\n/start করুন",
+            f"✅ *যোগ! (মোট: {len(accounts_data)}টি)*\n\nনাম: `{sn}`\nফোন: `{phone}`\n🔑 API সেট: {actual_idx+1} (ID: `{cred['api_id']}`)\n\nএখন অ্যাকাউন্ট > ভিউ > OTP পাঠান এ ক্লিক করুন।\n💾 *`.session` ফাইল সেভ হবে - লগআউট হবে না!*\n/start করুন",
             parse_mode='Markdown'
         )
     elif awaiting == 'add_bulk':
