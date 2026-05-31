@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# mass_bot_v8.py - FINAL (Pre-set API + Login through Bot)
+# mass_bot_v8.py - FINAL (OTP Fix + Login through Bot)
 
 import os
 import sys
@@ -10,7 +10,7 @@ import logging
 import threading
 from datetime import datetime
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError, SessionPasswordNeededError, AuthKeyUnregisteredError, UserDeactivatedError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError, AuthKeyUnregisteredError, UserDeactivatedError, PhoneCodeInvalidError, PhoneCodeExpiredError
 from telethon.tl.functions.messages import GetDialogsRequest
 from telethon.tl.types import InputPeerEmpty
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -44,7 +44,7 @@ OWNER_ID = 8001816524
 PRESET_API_CREDENTIALS = [
     {"api_id": 34124317, "api_hash": "b6a4101c735dda0625454c22b579d702"},      # API set 1
     {"api_id": 37362415, "api_hash": "88f99afa3b9a81adce62267b701e7b9f"},      # API set 2
-    {"api_id": 36952100, "api_hash": "21c793e15e6ceef225eeb83e5727d446"},      # API set 3
+    {"api_id": 37362415, "api_hash": "88f99afa3b9a81adce62267b701e7b9f"},      # API set 3
 ]
 # ============================================================
 
@@ -292,8 +292,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting_input'] = f'otp_code_{sn}'
         await query.edit_message_text(
             f"🔢 *OTP দিন*\n\nএকাউন্ট: `{sn}`\n\n"
-            f"টেলিগ্রামে যে 5 ডিজিটের কোড এসেছে, সেটি লিখুন:\n\n"
-            f"যেমন: `12345`\n\n'বাতিল' লিখে বাতিল করুন।",
+            f"টেলিগ্রাম অ্যাপে যে **5 ডিজিটের কোড** এসেছে, সেটি লিখুন:\n\n"
+            f"যেমন: `12345`\n\n"
+            f"⚠️ কোডটি টেলিগ্রামের 'Telegram' নামের অ্যাপে আসবে (Telegram X বা অন্য ক্লায়েন্টে নয়)\n\n"
+            f"'বাতিল' লিখে বাতিল করুন।",
             parse_mode='Markdown'
         )
     elif data.startswith('enter_2fa_'):
@@ -497,6 +499,7 @@ async def view_account(query, sn):
 
 
 async def send_otp_process(query, sn):
+    """OTP পাঠান - ফিক্সড ভার্সন"""
     if sn not in accounts_data:
         await query.edit_message_text("❌ নেই!")
         return
@@ -508,6 +511,14 @@ async def send_otp_process(query, sn):
     await query.edit_message_text(f"📱 *OTP পাঠানো হচ্ছে...*\n\nফোন: `{phone}`\nঅপেক্ষা করুন...", parse_mode='Markdown')
     
     try:
+        # আগের কোন pending_otp থাকলে তা ক্লিন করুন
+        if sn in pending_otp:
+            try:
+                await pending_otp[sn]['client'].disconnect()
+            except:
+                pass
+            del pending_otp[sn]
+        
         client = TelegramClient(f"{SESSIONS_DIR}/{sn}", api_id, api_hash)
         await client.connect()
         
@@ -522,13 +533,20 @@ async def send_otp_process(query, sn):
             await client.disconnect()
             return
         
-        # OTP পাঠান - টেলিগ্রাম API এর মাধ্যমে ঐ নম্বরে যায়
+        # কোড রিকোয়েস্ট - send_code_request কল
         result = await client.send_code_request(phone)
         
+        # সঠিকভাবে phone_code_hash সংরক্ষণ
         pending_otp[sn] = {
-            'client': client, 'phone': phone, 'phone_code_hash': result.phone_code_hash,
-            'api_id': api_id, 'api_hash': api_hash
+            'client': client,
+            'phone': phone,
+            'phone_code_hash': result.phone_code_hash,
+            'phone_code_hash_str': str(result.phone_code_hash),  # স্ট্রিং ভার্সন
+            'api_id': api_id,
+            'api_hash': api_hash
         }
+        
+        logger.info(f"[{sn}] OTP পাঠানো হয়েছে: phone_code_hash={result.phone_code_hash}")
         
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔢 OTP দিন", callback_data=f'enter_otp_{sn}')],
@@ -541,10 +559,12 @@ async def send_otp_process(query, sn):
             f"একাউন্ট: `{sn}`\n"
             f"ফোন: `{phone}`\n\n"
             f"📩 টেলিগ্রাম অ্যাপে 5 ডিজিটের কোড এসেছে\n"
+            f"⚠️ কোডটি **'Telegram'** নামের অ্যাপে চেক করুন (Telegram X নয়)\n\n"
             f"🔽 নিচের বাটনে ক্লিক করে কোড লিখুন:",
             parse_mode='Markdown', reply_markup=kb
         )
     except Exception as e:
+        logger.error(f"[{sn}] OTP error: {e}")
         await query.edit_message_text(f"❌ OTP ব্যর্থ: {e}")
 
 
@@ -627,6 +647,10 @@ async def show_settings(query):
     )
 
 
+# ============================================================
+# 🔥 ফিক্সড টেক্সট হ্যান্ডলার - OTP ভেরিফিকেশন 🔥
+# ============================================================
+
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
@@ -635,9 +659,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     awaiting = context.user_data.get('awaiting_input')
     
-    # ====== OTP CODE INPUT ======
+    # ====== OTP CODE INPUT (ফিক্সড) ======
     if awaiting and awaiting.startswith('otp_code_') and user_id == OWNER_ID:
         sn = awaiting.replace('otp_code_', '')
+        
         if text.lower() == 'বাতিল':
             if sn in pending_otp:
                 try:
@@ -650,23 +675,34 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         code = text.strip()
+        
         if sn in pending_otp:
             login_data = pending_otp[sn]
             client = login_data['client']
             phone = login_data['phone']
             phone_code_hash = login_data['phone_code_hash']
             
-            await update.message.reply_text("⏳ ভেরিফাই করা হচ্ছে...")
+            await update.message.reply_text("⏳ ভেরিফাই করা হচ্ছে... দয়া করে অপেক্ষা করুন...")
             
             try:
-                await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
+                # 🔥 ফিক্স: সরাসরি sign_in ব্যবহার করছি সঠিক প্যারামিটার সহ
+                # phone_code_hash অবশ্যই send_code_request থেকে পাওয়া আসল hash হতে হবে
+                user = await client.sign_in(
+                    phone=phone,
+                    code=code,
+                    phone_code_hash=phone_code_hash
+                )
+                
                 me = await client.get_me()
                 cred_idx = api_cred_index.get(sn, 0)
-                logger.info(f"✅ [{sn}] OTP লগইন! {me.first_name}")
+                logger.info(f"✅ [{sn}] OTP লগইন সফল! {me.first_name} (phone_code_hash={phone_code_hash})")
                 
                 account_health[sn] = {'status': 'ok', 'user': me.first_name, 'last_check': datetime.now().isoformat()}
                 save_data()
-                del pending_otp[sn]
+                
+                # ক্লায়েন্ট ডিসকানেক্ট করবেন না - session ফাইল সেভ হয়েছে
+                if sn in pending_otp:
+                    del pending_otp[sn]
                 context.user_data['awaiting_input'] = None
                 
                 await update.message.reply_text(
@@ -677,25 +713,70 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"এখন অ্যাকাউন্ট > ভিউ > ▶️ চালু করুন 🚀",
                     parse_mode='Markdown'
                 )
+                
             except SessionPasswordNeededError:
+                # 2FA প্রয়োজন
                 context.user_data['awaiting_input'] = f'2fa_code_{sn}'
                 await update.message.reply_text(
-                    "🔑 *2FA পাসওয়ার্ড প্রয়োজন!*\n\nপাসওয়ার্ড দিন:",
+                    "🔑 *2FA পাসওয়ার্ড প্রয়োজন!*\n\n"
+                    "এই একাউন্টে টু-ফ্যাক্টর অথেনটিকেশন চালু আছে।\n"
+                    "পাসওয়ার্ড দিন:",
                     parse_mode='Markdown'
                 )
+                
+            except PhoneCodeInvalidError:
+                await update.message.reply_text(
+                    "❌ *OTP ভুল!*\n\n"
+                    "আপনি ভুল কোড দিয়েছেন। নিচের বিষয়গুলো চেক করুন:\n"
+                    "1. টেলিগ্রামের 'Telegram' অ্যাপে (Telegram X নয়) আসা কোডটি ব্যবহার করুন\n"
+                    "2. কোডটি সাধারণত 5 ডিজিটের হয় (যেমন: 12345)\n"
+                    "3. কোড একবার ব্যবহারের পর আর কাজ করে না - আবার OTP পাঠান\n\n"
+                    "'OTP দিন' বাটনে ক্লিক করে আবার চেষ্টা করুন।",
+                    parse_mode='Markdown'
+                )
+                
+            except PhoneCodeExpiredError:
+                await update.message.reply_text(
+                    "❌ *OTP মেয়াদ শেষ!*\n\n"
+                    "কোডটি ৩০ সেকেন্ডের বেশি পুরনো।\n"
+                    "আবার 'OTP পাঠান' বাটনে ক্লিক করে নতুন কোড নিন।",
+                    parse_mode='Markdown'
+                )
+                
             except Exception as e:
-                logger.error(f"[{sn}] OTP error: {e}")
-                await update.message.reply_text(f"❌ OTP ভুল: {e}\n\nআবার OTP পাঠান।")
-                try:
-                    await client.disconnect()
-                except:
-                    pass
-                if sn in pending_otp:
-                    del pending_otp[sn]
-                context.user_data['awaiting_input'] = None
+                error_msg = str(e)
+                logger.error(f"[{sn}] OTP error: {error_msg}")
+                
+                if 'CODE_INVALID' in error_msg:
+                    await update.message.reply_text(
+                        "❌ *OTP ভুল!*\n\n"
+                        "আপনি ভুল কোড দিয়েছেন। আবার চেষ্টা করুন:\n"
+                        "1. 'OTP দিন' বাটনে ক্লিক করুন\n"
+                        "2. সঠিক 5 ডিজিটের কোড লিখুন",
+                        parse_mode='Markdown'
+                    )
+                elif 'PHONE_CODE' in error_msg:
+                    await update.message.reply_text(
+                        f"❌ OTP ভেরিফিকেশন ব্যর্থ: {error_msg}\n\n"
+                        f"আবার 'OTP পাঠান' দিয়ে নতুন কোড নিন।",
+                        parse_mode='Markdown'
+                    )
+                    # পুরনো pending_otp ক্লিন
+                    try:
+                        await client.disconnect()
+                    except:
+                        pass
+                    if sn in pending_otp:
+                        del pending_otp[sn]
+                    context.user_data['awaiting_input'] = None
+                else:
+                    await update.message.reply_text(f"❌ ত্রুটি: {error_msg}\n\nআবার চেষ্টা করুন।")
             return
         else:
-            await update.message.reply_text("❌ OTP সেশন নেই! আবার OTP পাঠান।")
+            await update.message.reply_text(
+                "❌ OTP সেশন নেই বা মেয়াদ শেষ!\n\n"
+                "অ্যাকাউন্ট > ভিউ > OTP পাঠান দিয়ে নতুন করে শুরু করুন।"
+            )
             context.user_data['awaiting_input'] = None
             return
     
