@@ -5,6 +5,7 @@ import asyncio
 import random
 import logging
 import json
+import threading
 from datetime import datetime
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -13,6 +14,7 @@ from telethon.tl.functions.messages import GetDialogsRequest
 from telethon.tl.types import InputPeerEmpty
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from flask import Flask
 
 logging.basicConfig(
     level=logging.INFO, 
@@ -43,8 +45,8 @@ API_HASH_3 = os.environ.get("API_HASH_3", "")
 SESSION_3 = os.environ.get("SESSION_3", "")
 
 MESSAGE = os.environ.get("MESSAGE", "𝟭𝟬 𝗠𝗜𝗡 𝗩𝗖 ₹𝟰𝟱 𝗕𝗔𝗕𝗬😘")
-MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "5"))  # বাড়ালাম ৫ সেকেন্ড
-MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "8"))  # বাড়ালাম ৮ সেকেন্ড
+MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "5"))
+MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "8"))
 CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "30"))
 # ===================================
 
@@ -59,7 +61,7 @@ if not all([BOT_TOKEN, OWNER_ID, API_ID_1, API_HASH_1, SESSION_1]):
     print("\n❌ ERROR: Account 1 credentials missing!", flush=True)
     sys.exit(1)
 
-# Global variables with proper cancellation support
+# Global variables
 running_tasks = {}
 stop_flags = {}
 account_clients = {}
@@ -81,6 +83,26 @@ ACTIVE_ACCOUNTS = [acc for acc in ACCOUNTS if all([acc['api_id'], acc['api_hash'
 print(f"📊 Active accounts: {len(ACTIVE_ACCOUNTS)}", flush=True)
 for acc in ACTIVE_ACCOUNTS:
     print(f"   ✅ {acc['id']}: configured", flush=True)
+
+
+# ====== Flask Web Server (Render Web Service এর জন্য) ======
+web_app = Flask(__name__)
+
+@web_app.route("/")
+def home():
+    running_count = sum(1 for acc in ACTIVE_ACCOUNTS if account_stats[acc['id']]['running'])
+    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACTIVE_ACCOUNTS)
+    return f"✅ Bot Running | Active: {running_count}/{len(ACTIVE_ACCOUNTS)} | Total Sent: {total_sent}"
+
+@web_app.route("/health")
+def health():
+    return "OK", 200
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+# ============================================================
+
 
 def load_data():
     global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT, account_stats
@@ -131,7 +153,7 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
         account_clients[acc_id] = client
         account_stats[acc_id]['running'] = True
         
-        # Get all groups (only groups, not channels where we can't post)
+        # Get all groups
         dialogs = await client(GetDialogsRequest(
             offset_date=None, offset_id=0,
             offset_peer=InputPeerEmpty(), limit=200, hash=0
@@ -140,9 +162,8 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
         for dialog in dialogs.dialogs:
             try:
                 entity = await client.get_entity(dialog.peer)
-                # Only add groups (not channels)
                 if hasattr(entity, 'title') and hasattr(entity, 'megagroup'):
-                    if entity.megagroup:  # Only regular groups, not channels
+                    if entity.megagroup:
                         groups.append(entity)
                 elif hasattr(entity, 'title') and not hasattr(entity, 'broadcast'):
                     groups.append(entity)
@@ -159,7 +180,6 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
         
         while not stop_flags.get(acc_id, False):
             for group in groups:
-                # Check if stop requested
                 if stop_flags.get(acc_id, False):
                     break
                     
@@ -171,7 +191,6 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
                 except FloodWaitError as e:
                     wait_time = e.seconds
                     logger.warning(f"[{acc_id}] Flood wait: {wait_time}s")
-                    # Check stop flag during flood wait
                     for i in range(wait_time):
                         if stop_flags.get(acc_id, False):
                             break
@@ -191,7 +210,6 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
             cycle_count += 1
             logger.info(f"[{acc_id}] Cycle {cycle_count} done. Waiting {CYCLE_WAIT}s...")
             
-            # Check stop flag during cycle wait
             for i in range(CYCLE_WAIT):
                 if stop_flags.get(acc_id, False):
                     break
@@ -207,7 +225,6 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
                 client = await get_client(acc_id, api_id, api_hash, session_string)
                 account_clients[acc_id] = client
                 
-                # Re-fetch groups
                 dialogs = await client(GetDialogsRequest(
                     offset_date=None, offset_id=0,
                     offset_peer=InputPeerEmpty(), limit=200, hash=0
@@ -241,7 +258,6 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
         logger.info(f"[{acc_id}] Fully stopped")
 
 def stop_account(acc_id):
-    """Stop a specific account"""
     stop_flags[acc_id] = True
     if acc_id in running_tasks and not running_tasks[acc_id].done():
         running_tasks[acc_id].cancel()
@@ -250,7 +266,6 @@ def stop_account(acc_id):
     logger.info(f"[{acc_id}] Stop signal sent")
 
 def stop_all_accounts():
-    """Stop all accounts"""
     for acc in ACTIVE_ACCOUNTS:
         stop_account(acc['id'])
 
@@ -317,7 +332,6 @@ async def button_handler(update: Update, context):
         if not text:
             text = "❌ কিছুই চলছে না!"
         await query.edit_message_text(text)
-        # Wait a moment then show updated status
         await asyncio.sleep(2)
         await show_status_auto(query)
     
@@ -397,12 +411,9 @@ async def button_handler(update: Update, context):
         for acc in ACTIVE_ACCOUNTS:
             aid = acc['id']
             try:
-                # First stop if running
                 if account_stats[aid]['running']:
                     stop_account(aid)
                     await asyncio.sleep(2)
-                
-                # Test session
                 client = await get_client(aid, acc['api_id'], acc['api_hash'], acc['session'])
                 await client.disconnect()
                 text += f"✅ {aid}: Session OK\n"
@@ -482,6 +493,7 @@ async def text_handler(update: Update, context):
             await update.message.reply_text("❌ শুধু সংখ্যা দিন!")
         context.user_data['awaiting'] = None
 
+
 async def main():
     print("=" * 50, flush=True)
     print("🤖 3-ACCOUNT MASS MESSAGING BOT", flush=True)
@@ -491,16 +503,15 @@ async def main():
     load_data()
     print(f"📂 Data loaded successfully", flush=True)
     
-    print("\n🔐 Verifying sessions...", flush=True)
-    for acc in ACTIVE_ACCOUNTS:
-        try:
-            print(f"   Checking {acc['id']}...", end=' ', flush=True)
-            client = await get_client(acc['id'], acc['api_id'], acc['api_hash'], acc['session'])
-            await client.disconnect()
-            print("✅ OK", flush=True)
-        except Exception as e:
-            print(f"❌ Failed: {e}", flush=True)
-            sys.exit(1)
+    print("\n🔐 Quick session check...", flush=True)
+    try:
+        print(f"   Checking acc1...", end=' ', flush=True)
+        client = await get_client('acc1', API_ID_1, API_HASH_1, SESSION_1)
+        await client.disconnect()
+        print("✅ OK", flush=True)
+    except Exception as e:
+        print(f"❌ Failed: {e}", flush=True)
+        sys.exit(1)
     
     print("\n🤖 Setting up bot...", flush=True)
     app = Application.builder().token(BOT_TOKEN).build()
@@ -514,18 +525,28 @@ async def main():
     print("✅✅✅ BOT IS RUNNING! Send /start in Telegram ✅✅✅", flush=True)
     
     try:
-        while True:
-            await asyncio.sleep(3600)
-    except:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
         pass
     finally:
+        logger.info("🛑 Shutting down...")
+        stop_all_accounts()
+        await asyncio.sleep(1)
         await app.stop()
+        await app.shutdown()
+
 
 if __name__ == "__main__":
+    # Flask থ্রেড স্টার্ট করো (Render Web Service এর জন্য)
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    print(f"🌐 Flask web server started on port {os.environ.get('PORT', 10000)}", flush=True)
+    
+    # মূল async bot চালাও
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("⛔ Stopped")
+        logger.info("⛔ Stopped by keyboard interrupt")
     except Exception as e:
         print(f"\n❌❌❌ FATAL ERROR: {e}", flush=True)
         import traceback
