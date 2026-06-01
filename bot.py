@@ -7,7 +7,7 @@ from telethon.errors import FloodWaitError
 from telethon.tl.functions.messages import GetDialogsRequest
 from telethon.tl.types import InputPeerEmpty
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, Updater
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -94,14 +94,11 @@ async def run_messaging():
                 await asyncio.sleep(random.randint(MIN_INTERVAL, MAX_INTERVAL))
             cycle_count += 1
             logger.info(f"✅ Cycle {cycle_count} complete. Waiting {CYCLE_WAIT}s...")
-            
-            # Reconnect every 10 cycles to keep session fresh
             if cycle_count % 10 == 0:
                 logger.info("🔄 Reconnecting to refresh session...")
                 await client.disconnect()
                 await asyncio.sleep(3)
                 client = await get_client()
-                # Re-fetch groups
                 dialogs = await client(GetDialogsRequest(
                     offset_date=None, offset_id=0,
                     offset_peer=InputPeerEmpty(), limit=200, hash=0
@@ -115,7 +112,6 @@ async def run_messaging():
                     except:
                         pass
                 logger.info(f"🔄 Reconnected. {len(groups)} groups found.")
-            
             await asyncio.sleep(CYCLE_WAIT)
     except asyncio.CancelledError:
         logger.info("⏹️ Stopped")
