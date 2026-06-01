@@ -12,59 +12,47 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ====== Environment Variables থেকে পড়ুন ======
+# ====== Environment Variables ======
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 
-# Account 1
 API_ID_1 = int(os.environ.get("API_ID_1", "0"))
 API_HASH_1 = os.environ.get("API_HASH_1", "")
 SESSION_1 = os.environ.get("SESSION_1", "")
 
-# Account 2
 API_ID_2 = int(os.environ.get("API_ID_2", "0"))
 API_HASH_2 = os.environ.get("API_HASH_2", "")
 SESSION_2 = os.environ.get("SESSION_2", "")
 
-# Account 3
 API_ID_3 = int(os.environ.get("API_ID_3", "0"))
 API_HASH_3 = os.environ.get("API_HASH_3", "")
 SESSION_3 = os.environ.get("SESSION_3", "")
 
-# Settings (default)
-MESSAGE = os.environ.get("MESSAGE", "𝟭𝟬 𝗠𝗜𝗡 𝗩𝗖 ₹𝟰𝟵 𝗕𝗔𝗕𝗬😘")
+MESSAGE = os.environ.get("MESSAGE", "𝟭𝟬 𝗠𝗜𝗡 𝗩𝗖 ₹𝟰𝟱 𝗕𝗔𝗕𝗬😘")
 MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "3"))
 MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "5"))
 CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "30"))
-# =============================================
+# ===================================
 
-# Check required variables
-if not all([BOT_TOKEN, OWNER_ID]):
-    print("❌ ERROR: BOT_TOKEN and OWNER_ID required!")
+if not all([BOT_TOKEN, OWNER_ID, API_ID_1, API_HASH_1, SESSION_1]):
+    print("❌ ERROR: Missing required environment variables!")
     sys.exit(1)
 
-if not all([API_ID_1, API_HASH_1, SESSION_1]):
-    print("❌ ERROR: Account 1 credentials missing!")
-    sys.exit(1)
-
-# Global variables
 running_tasks = {}
 account_clients = {}
 account_stats = {
-    'acc1': {'sent': 0, 'running': False, 'name': 'Account 1'},
-    'acc2': {'sent': 0, 'running': False, 'name': 'Account 2'},
-    'acc3': {'sent': 0, 'running': False, 'name': 'Account 3'}
+    'acc1': {'sent': 0, 'running': False},
+    'acc2': {'sent': 0, 'running': False},
+    'acc3': {'sent': 0, 'running': False}
 }
 data_file = "bot_data.json"
 
-# Account configurations
 ACCOUNTS = [
     {'id': 'acc1', 'api_id': API_ID_1, 'api_hash': API_HASH_1, 'session': SESSION_1},
     {'id': 'acc2', 'api_id': API_ID_2, 'api_hash': API_HASH_2, 'session': SESSION_2},
     {'id': 'acc3', 'api_id': API_ID_3, 'api_hash': API_HASH_3, 'session': SESSION_3}
 ]
 
-# Filter out accounts that don't have all credentials
 ACTIVE_ACCOUNTS = [acc for acc in ACCOUNTS if all([acc['api_id'], acc['api_hash'], acc['session']])]
 
 def load_data():
@@ -99,7 +87,6 @@ def save_data():
         pass
 
 async def get_client(acc_id, api_id, api_hash, session_string):
-    """Create and start a Telegram client using session string"""
     client = TelegramClient(StringSession(session_string), api_id, api_hash)
     await client.start()
     me = await client.get_me()
@@ -107,22 +94,17 @@ async def get_client(acc_id, api_id, api_hash, session_string):
     return client
 
 async def run_account_messaging(acc_id, api_id, api_hash, session_string):
-    """Run messaging for a single account"""
     global account_stats
-    
     logger.info(f"🚀 [{acc_id}] Starting...")
-    
     try:
         client = await get_client(acc_id, api_id, api_hash, session_string)
         account_clients[acc_id] = client
         account_stats[acc_id]['running'] = True
         
-        # Get all groups
         dialogs = await client(GetDialogsRequest(
             offset_date=None, offset_id=0,
             offset_peer=InputPeerEmpty(), limit=200, hash=0
         ))
-        
         groups = []
         for dialog in dialogs.dialogs:
             try:
@@ -131,7 +113,6 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
                     groups.append(entity)
             except:
                 pass
-        
         if not groups:
             logger.warning(f"[{acc_id}] No groups found!")
             account_stats[acc_id]['running'] = False
@@ -152,13 +133,11 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
                     await asyncio.sleep(e.seconds)
                 except Exception as e:
                     logger.warning(f"[{acc_id}] Error: {e}")
-                
                 await asyncio.sleep(random.randint(MIN_INTERVAL, MAX_INTERVAL))
             
             cycle_count += 1
-            logger.info(f"[{acc_id}] Cycle {cycle_count} complete. Waiting {CYCLE_WAIT}s...")
+            logger.info(f"[{acc_id}] Cycle {cycle_count} done. Waiting {CYCLE_WAIT}s...")
             
-            # Reconnect every 15 cycles
             if cycle_count % 15 == 0:
                 logger.info(f"[{acc_id}] Reconnecting...")
                 await client.disconnect()
@@ -166,7 +145,6 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
                 client = await get_client(acc_id, api_id, api_hash, session_string)
                 account_clients[acc_id] = client
                 
-                # Re-fetch groups
                 dialogs = await client(GetDialogsRequest(
                     offset_date=None, offset_id=0,
                     offset_peer=InputPeerEmpty(), limit=200, hash=0
@@ -212,7 +190,7 @@ async def start(update: Update, context):
         [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
         [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
         [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
-        [InlineKeyboardButton("🔄 Session রিনিউ", callback_data='refresh_all')]
+        [InlineKeyboardButton("🔄 Session Refresh", callback_data='refresh_all')]
     ])
     
     await update.message.reply_text(
@@ -243,7 +221,7 @@ async def button_handler(update: Update, context):
                 running_tasks[acc_id] = task
                 text += f"▶️ {acc_id} চালু হয়েছে\n"
         if not text:
-            text = "❌ কোনো একাউন্ট কনফিগার করা নেই!"
+            text = "❌ কোনো একাউন্ট নেই!"
         await query.edit_message_text(text)
     
     elif query.data == 'stop_all':
@@ -255,9 +233,7 @@ async def button_handler(update: Update, context):
             del running_tasks[acc_id]
         for acc in ACTIVE_ACCOUNTS:
             account_stats[acc['id']]['running'] = False
-        if not text:
-            text = "❌ কিছুই চলছে না!"
-        await query.edit_message_text(text)
+        await query.edit_message_text(text or "❌ কিছুই চলছে না!")
     
     elif query.data == 'status':
         total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACTIVE_ACCOUNTS)
@@ -266,7 +242,7 @@ async def button_handler(update: Update, context):
             aid = acc['id']
             status = '🟢 চলছে' if account_stats[aid]['running'] else '🔴 বন্ধ'
             text += f"• {aid}: {status} | পাঠিয়েছে: {account_stats[aid]['sent']}\n"
-        text += f"\n📝 ম্যাসেজ: `{MESSAGE[:40]}...`"
+        text += f"\n📝 `{MESSAGE[:40]}`"
         text += f"\n⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s"
         text += f"\n📨 মোট: {total_sent}"
         await query.edit_message_text(text, parse_mode='Markdown')
@@ -275,7 +251,6 @@ async def button_handler(update: Update, context):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✏️ ম্যাসেজ পরিবর্তন", callback_data='edit_msg')],
             [InlineKeyboardButton("⏱️ স্পিড সেটিংস", callback_data='edit_speed')],
-            [InlineKeyboardButton("📊 একাউন্ট স্ট্যাটাস", callback_data='status')],
             [InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]
         ])
         await query.edit_message_text(
@@ -289,9 +264,7 @@ async def button_handler(update: Update, context):
     elif query.data == 'edit_msg':
         context.user_data['awaiting'] = 'message'
         await query.edit_message_text(
-            f"✏️ *নতুন ম্যাসেজ লিখুন*\n\n"
-            f"বর্তমান: `{MESSAGE}`\n\n"
-            f"শুধু ম্যাসেজ টা লিখে পাঠান:",
+            f"✏️ *নতুন ম্যাসেজ লিখুন*\n\nবর্তমান: `{MESSAGE}`\n\nশুধু ম্যাসেজ টা লিখে পাঠান:",
             parse_mode='Markdown'
         )
     
@@ -319,7 +292,6 @@ async def button_handler(update: Update, context):
     elif query.data == 'groups':
         await query.edit_message_text("👥 *গ্রুপ লিস্ট*\nলোড হচ্ছে...", parse_mode='Markdown')
         try:
-            # Use first active account
             acc = ACTIVE_ACCOUNTS[0]
             client = await get_client(acc['id'], acc['api_id'], acc['api_hash'], acc['session'])
             dialogs = await client(GetDialogsRequest(
@@ -348,41 +320,18 @@ async def button_handler(update: Update, context):
         for acc in ACTIVE_ACCOUNTS:
             aid = acc['id']
             try:
-                # Stop if running
                 if aid in running_tasks and not running_tasks[aid].done():
                     running_tasks[aid].cancel()
                     del running_tasks[aid]
                 account_stats[aid]['running'] = False
-                
-                # Test session
                 client = await get_client(aid, acc['api_id'], acc['api_hash'], acc['session'])
                 await client.disconnect()
                 text += f"✅ {aid}: Session OK\n"
             except Exception as e:
                 text += f"❌ {aid}: {str(e)[:50]}\n"
         await query.edit_message_text(text)
-        # Auto back to main after 3 seconds
-        await asyncio.sleep(3)
-        # Re-show main menu
-        total_accounts = len(ACTIVE_ACCOUNTS)
-        running_count = sum(1 for acc in ACTIVE_ACCOUNTS if account_stats[acc['id']]['running'])
-        total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACTIVE_ACCOUNTS)
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("▶️ সব চালু", callback_data='start_all'),
-             InlineKeyboardButton("⏹️ সব বন্ধ", callback_data='stop_all')],
-            [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
-            [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
-            [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
-            [InlineKeyboardButton("🔄 Session রিনিউ", callback_data='refresh_all')]
-        ])
-        await query.edit_message_text(
-            f"🤖 *ম্যাসেজিং বট*\n\n"
-            f"📊 চলছে: {running_count}/{total_accounts}\n"
-            f"📝 `{MESSAGE[:30]}...`\n"
-            f"⚡ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s\n"
-            f"📨 মোট পাঠিয়েছে: {total_sent}",
-            parse_mode='Markdown', reply_markup=kb
-        )
+        await asyncio.sleep(2)
+        await button_handler(update, context)  # Go back
     
     elif query.data == 'back_main':
         total_accounts = len(ACTIVE_ACCOUNTS)
@@ -394,7 +343,7 @@ async def button_handler(update: Update, context):
             [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
             [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
             [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
-            [InlineKeyboardButton("🔄 Session রিনিউ", callback_data='refresh_all')]
+            [InlineKeyboardButton("🔄 Session Refresh", callback_data='refresh_all')]
         ])
         await query.edit_message_text(
             f"🤖 *ম্যাসেজিং বট*\n\n"
@@ -408,15 +357,12 @@ async def button_handler(update: Update, context):
 async def text_handler(update: Update, context):
     if update.effective_user.id != OWNER_ID:
         return
-    
     text = update.message.text.strip()
     awaiting = context.user_data.get('awaiting')
-    
     if not awaiting:
         return
-    
     global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT
-    
+
     if awaiting == 'message':
         MESSAGE = text
         context.user_data['awaiting'] = None
@@ -426,16 +372,14 @@ async def text_handler(update: Update, context):
     elif awaiting == 'min':
         try:
             v = int(text)
-            if v < 1:
-                await update.message.reply_text("❌ ১ সেকেন্ড বা বেশি দিন!")
-            elif v >= MAX_INTERVAL:
-                await update.message.reply_text(f"❌ মিন {MAX_INTERVAL} এর কম হবে!")
+            if v < 1 or v >= MAX_INTERVAL:
+                await update.message.reply_text(f"❌ ১-{MAX_INTERVAL-1} এর মধ্যে দিন!")
             else:
                 MIN_INTERVAL = v
                 save_data()
                 await update.message.reply_text(f"✅ মিন সেট: {v}s")
         except:
-            await update.message.reply_text("❌ শুধু সংখ্যা দিন (যেমন: 2)")
+            await update.message.reply_text("❌ শুধু সংখ্যা দিন!")
         context.user_data['awaiting'] = None
     
     elif awaiting == 'max':
@@ -448,7 +392,7 @@ async def text_handler(update: Update, context):
                 save_data()
                 await update.message.reply_text(f"✅ ম্যাক্স সেট: {v}s")
         except:
-            await update.message.reply_text("❌ শুধু সংখ্যা দিন (যেমন: 5)")
+            await update.message.reply_text("❌ শুধু সংখ্যা দিন!")
         context.user_data['awaiting'] = None
     
     elif awaiting == 'cycle':
@@ -461,17 +405,11 @@ async def text_handler(update: Update, context):
                 save_data()
                 await update.message.reply_text(f"✅ সাইকেল সেট: {v}s")
         except:
-            await update.message.reply_text("❌ শুধু সংখ্যা দিন (যেমন: 30)")
+            await update.message.reply_text("❌ শুধু সংখ্যা দিন!")
         context.user_data['awaiting'] = None
 
 async def main():
-    print("""
-╔════════════════════════════════════════════════════╗
-║   🤖 3-ACCOUNT MASS MESSAGING BOT                ║
-║   🔥 Bot Control | Speed Control | Message Control ║
-╚════════════════════════════════════════════════════╝
-    """)
-    
+    print("3-Account Mass Messaging Bot Starting...")
     logger.info("🚀 Starting bot...")
     load_data()
     
@@ -479,7 +417,6 @@ async def main():
     for acc in ACTIVE_ACCOUNTS:
         logger.info(f"   ✅ {acc['id']}: configured")
     
-    # Verify all sessions
     for acc in ACTIVE_ACCOUNTS:
         try:
             client = await get_client(acc['id'], acc['api_id'], acc['api_hash'], acc['session'])
@@ -497,7 +434,7 @@ async def main():
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    print("✅ বট চালু! Telegram এ /start দিন")
+    print("✅ Bot is running! Send /start in Telegram")
     
     try:
         while True:
