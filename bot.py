@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-import os, sys, asyncio, random, logging, json
+import sys
+import os
+import asyncio
+import random
+import logging
+import json
 from datetime import datetime
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -9,9 +14,6 @@ from telethon.tl.types import InputPeerEmpty
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
-# Force flush output
-print = lambda *args, **kwargs: __builtins__['print'](*args, **kwargs, flush=True)
-
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -20,9 +22,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-print("=" * 60)
-print("🤖 3-ACCOUNT BOT STARTING...")
-print("=" * 60)
+print("=" * 60, flush=True)
+print("🤖 3-ACCOUNT BOT STARTING...", flush=True)
+print("=" * 60, flush=True)
 
 # ====== Environment Variables ======
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -46,19 +48,15 @@ MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "5"))
 CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "30"))
 # ===================================
 
-print("\n📋 Checking environment variables...")
-print(f"   BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
-print(f"   OWNER_ID: {OWNER_ID}")
-print(f"   API_ID_1: {API_ID_1}")
-print(f"   API_HASH_1: {'✅' if API_HASH_1 else '❌'}")
-print(f"   SESSION_1: {'✅' if SESSION_1 else '❌'}")
-if API_ID_2 and API_HASH_2 and SESSION_2:
-    print(f"   API_ID_2: ✅")
-if API_ID_3 and API_HASH_3 and SESSION_3:
-    print(f"   API_ID_3: ✅")
+print("📋 Checking environment variables...", flush=True)
+print(f"   BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}", flush=True)
+print(f"   OWNER_ID: {OWNER_ID}", flush=True)
+print(f"   API_ID_1: {API_ID_1}", flush=True)
+print(f"   API_HASH_1: {'✅' if API_HASH_1 else '❌'}", flush=True)
+print(f"   SESSION_1: {'✅' if SESSION_1 else '❌'}", flush=True)
 
 if not all([BOT_TOKEN, OWNER_ID, API_ID_1, API_HASH_1, SESSION_1]):
-    print("\n❌ ERROR: Account 1 credentials missing!")
+    print("\n❌ ERROR: Account 1 credentials missing!", flush=True)
     sys.exit(1)
 
 running_tasks = {}
@@ -78,9 +76,9 @@ ACCOUNTS = [
 
 ACTIVE_ACCOUNTS = [acc for acc in ACCOUNTS if all([acc['api_id'], acc['api_hash'], acc['session']])]
 
-print(f"\n📊 Active accounts: {len(ACTIVE_ACCOUNTS)}")
+print(f"📊 Active accounts: {len(ACTIVE_ACCOUNTS)}", flush=True)
 for acc in ACTIVE_ACCOUNTS:
-    print(f"   ✅ {acc['id']}: configured")
+    print(f"   ✅ {acc['id']}: configured", flush=True)
 
 def load_data():
     global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT, account_stats
@@ -436,25 +434,26 @@ async def text_handler(update: Update, context):
         context.user_data['awaiting'] = None
 
 async def main():
-    print("=" * 50)
-    print("🤖 3-ACCOUNT MASS MESSAGING BOT")
-    print("=" * 50)
+    print("=" * 50, flush=True)
+    print("🤖 3-ACCOUNT MASS MESSAGING BOT", flush=True)
+    print("=" * 50, flush=True)
     
+    print(f"🐍 Python version: {sys.version}", flush=True)
     load_data()
-    print(f"\n📂 Data loaded successfully")
+    print(f"📂 Data loaded successfully", flush=True)
     
-    print("\n🔐 Verifying sessions...")
+    print("\n🔐 Verifying sessions...", flush=True)
     for acc in ACTIVE_ACCOUNTS:
         try:
-            print(f"   Checking {acc['id']}...", end=' ')
+            print(f"   Checking {acc['id']}...", end=' ', flush=True)
             client = await get_client(acc['id'], acc['api_id'], acc['api_hash'], acc['session'])
             await client.disconnect()
-            print("✅ OK")
+            print("✅ OK", flush=True)
         except Exception as e:
-            print(f"❌ Failed: {e}")
+            print(f"❌ Failed: {e}", flush=True)
             sys.exit(1)
     
-    print("\n🤖 Setting up bot...")
+    print("\n🤖 Setting up bot...", flush=True)
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -463,7 +462,7 @@ async def main():
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    print("✅✅✅ BOT IS RUNNING! Send /start in Telegram ✅✅✅")
+    print("✅✅✅ BOT IS RUNNING! Send /start in Telegram ✅✅✅", flush=True)
     
     try:
         while True:
@@ -479,7 +478,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("⛔ Stopped")
     except Exception as e:
-        print(f"\n❌❌❌ FATAL ERROR: {e}")
+        print(f"\n❌❌❌ FATAL ERROR: {e}", flush=True)
         import traceback
         traceback.print_exc()
         sys.exit(1)
