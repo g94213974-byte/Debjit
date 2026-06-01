@@ -9,8 +9,20 @@ from telethon.tl.types import InputPeerEmpty
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Force flush output
+print = lambda *args, **kwargs: __builtins__['print'](*args, **kwargs, flush=True)
+
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    force=True,
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 logger = logging.getLogger(__name__)
+
+print("=" * 60)
+print("🤖 3-ACCOUNT BOT STARTING...")
+print("=" * 60)
 
 # ====== Environment Variables ======
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -34,8 +46,19 @@ MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "5"))
 CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "30"))
 # ===================================
 
+print("\n📋 Checking environment variables...")
+print(f"   BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}")
+print(f"   OWNER_ID: {OWNER_ID}")
+print(f"   API_ID_1: {API_ID_1}")
+print(f"   API_HASH_1: {'✅' if API_HASH_1 else '❌'}")
+print(f"   SESSION_1: {'✅' if SESSION_1 else '❌'}")
+if API_ID_2 and API_HASH_2 and SESSION_2:
+    print(f"   API_ID_2: ✅")
+if API_ID_3 and API_HASH_3 and SESSION_3:
+    print(f"   API_ID_3: ✅")
+
 if not all([BOT_TOKEN, OWNER_ID, API_ID_1, API_HASH_1, SESSION_1]):
-    print("❌ ERROR: Missing required environment variables!")
+    print("\n❌ ERROR: Account 1 credentials missing!")
     sys.exit(1)
 
 running_tasks = {}
@@ -54,6 +77,10 @@ ACCOUNTS = [
 ]
 
 ACTIVE_ACCOUNTS = [acc for acc in ACCOUNTS if all([acc['api_id'], acc['api_hash'], acc['session']])]
+
+print(f"\n📊 Active accounts: {len(ACTIVE_ACCOUNTS)}")
+for acc in ACTIVE_ACCOUNTS:
+    print(f"   ✅ {acc['id']}: configured")
 
 def load_data():
     global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT, account_stats
@@ -164,7 +191,7 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
     except asyncio.CancelledError:
         logger.info(f"[{acc_id}] Stopped by user")
     except Exception as e:
-        logger.error(f"[{acc_id}] Fatal error: {e}")
+        logger.error(f"[{acc_id}] Fatal error: {e}", exc_info=True)
     finally:
         account_stats[acc_id]['running'] = False
         if acc_id in account_clients:
@@ -233,7 +260,9 @@ async def button_handler(update: Update, context):
             del running_tasks[acc_id]
         for acc in ACTIVE_ACCOUNTS:
             account_stats[acc['id']]['running'] = False
-        await query.edit_message_text(text or "❌ কিছুই চলছে না!")
+        if not text:
+            text = "❌ কিছুই চলছে না!"
+        await query.edit_message_text(text)
     
     elif query.data == 'status':
         total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACTIVE_ACCOUNTS)
@@ -330,8 +359,6 @@ async def button_handler(update: Update, context):
             except Exception as e:
                 text += f"❌ {aid}: {str(e)[:50]}\n"
         await query.edit_message_text(text)
-        await asyncio.sleep(2)
-        await button_handler(update, context)  # Go back
     
     elif query.data == 'back_main':
         total_accounts = len(ACTIVE_ACCOUNTS)
@@ -409,23 +436,25 @@ async def text_handler(update: Update, context):
         context.user_data['awaiting'] = None
 
 async def main():
-    print("3-Account Mass Messaging Bot Starting...")
-    logger.info("🚀 Starting bot...")
+    print("=" * 50)
+    print("🤖 3-ACCOUNT MASS MESSAGING BOT")
+    print("=" * 50)
+    
     load_data()
+    print(f"\n📂 Data loaded successfully")
     
-    logger.info(f"📊 Active accounts: {len(ACTIVE_ACCOUNTS)}")
-    for acc in ACTIVE_ACCOUNTS:
-        logger.info(f"   ✅ {acc['id']}: configured")
-    
+    print("\n🔐 Verifying sessions...")
     for acc in ACTIVE_ACCOUNTS:
         try:
+            print(f"   Checking {acc['id']}...", end=' ')
             client = await get_client(acc['id'], acc['api_id'], acc['api_hash'], acc['session'])
             await client.disconnect()
-            logger.info(f"✅ {acc['id']} session verified!")
+            print("✅ OK")
         except Exception as e:
-            logger.error(f"❌ {acc['id']} session failed: {e}")
+            print(f"❌ Failed: {e}")
             sys.exit(1)
     
+    print("\n🤖 Setting up bot...")
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -434,7 +463,7 @@ async def main():
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
-    print("✅ Bot is running! Send /start in Telegram")
+    print("✅✅✅ BOT IS RUNNING! Send /start in Telegram ✅✅✅")
     
     try:
         while True:
@@ -450,5 +479,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("⛔ Stopped")
     except Exception as e:
-        logger.error(f"❌ Fatal: {e}")
+        print(f"\n❌❌❌ FATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
