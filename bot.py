@@ -43,8 +43,8 @@ API_HASH_3 = os.environ.get("API_HASH_3", "")
 SESSION_3 = os.environ.get("SESSION_3", "")
 
 MESSAGE = os.environ.get("MESSAGE", "𝟭𝟬 𝗠𝗜𝗡 𝗩𝗖 ₹𝟰𝟱 𝗕𝗔𝗕𝗬😘")
-MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "3"))
-MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "5"))
+MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "5"))  # বাড়ালাম ৫ সেকেন্ড
+MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "8"))  # বাড়ালাম ৮ সেকেন্ড
 CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "30"))
 # ===================================
 
@@ -59,7 +59,9 @@ if not all([BOT_TOKEN, OWNER_ID, API_ID_1, API_HASH_1, SESSION_1]):
     print("\n❌ ERROR: Account 1 credentials missing!", flush=True)
     sys.exit(1)
 
+# Global variables with proper cancellation support
 running_tasks = {}
+stop_flags = {}
 account_clients = {}
 account_stats = {
     'acc1': {'sent': 0, 'running': False},
@@ -119,13 +121,17 @@ async def get_client(acc_id, api_id, api_hash, session_string):
     return client
 
 async def run_account_messaging(acc_id, api_id, api_hash, session_string):
-    global account_stats
+    global account_stats, stop_flags
+    
+    stop_flags[acc_id] = False
     logger.info(f"🚀 [{acc_id}] Starting...")
+    
     try:
         client = await get_client(acc_id, api_id, api_hash, session_string)
         account_clients[acc_id] = client
         account_stats[acc_id]['running'] = True
         
+        # Get all groups (only groups, not channels where we can't post)
         dialogs = await client(GetDialogsRequest(
             offset_date=None, offset_id=0,
             offset_peer=InputPeerEmpty(), limit=200, hash=0
@@ -134,10 +140,15 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
         for dialog in dialogs.dialogs:
             try:
                 entity = await client.get_entity(dialog.peer)
-                if hasattr(entity, 'title'):
+                # Only add groups (not channels)
+                if hasattr(entity, 'title') and hasattr(entity, 'megagroup'):
+                    if entity.megagroup:  # Only regular groups, not channels
+                        groups.append(entity)
+                elif hasattr(entity, 'title') and not hasattr(entity, 'broadcast'):
                     groups.append(entity)
             except:
                 pass
+        
         if not groups:
             logger.warning(f"[{acc_id}] No groups found!")
             account_stats[acc_id]['running'] = False
@@ -146,30 +157,57 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
         logger.info(f"[{acc_id}] Sending to {len(groups)} groups...")
         cycle_count = 0
         
-        while True:
+        while not stop_flags.get(acc_id, False):
             for group in groups:
+                # Check if stop requested
+                if stop_flags.get(acc_id, False):
+                    break
+                    
                 try:
                     await client.send_message(group, MESSAGE)
                     logger.info(f"✅ [{acc_id}] Sent to {group.title}")
                     account_stats[acc_id]['sent'] += 1
                     save_data()
                 except FloodWaitError as e:
-                    logger.warning(f"[{acc_id}] Flood wait: {e.seconds}s")
-                    await asyncio.sleep(e.seconds)
+                    wait_time = e.seconds
+                    logger.warning(f"[{acc_id}] Flood wait: {wait_time}s")
+                    # Check stop flag during flood wait
+                    for i in range(wait_time):
+                        if stop_flags.get(acc_id, False):
+                            break
+                        await asyncio.sleep(1)
                 except Exception as e:
-                    logger.warning(f"[{acc_id}] Error: {e}")
+                    error_str = str(e)
+                    if "admin privileges" in error_str.lower() or "can't write" in error_str.lower():
+                        logger.warning(f"[{acc_id}] Skipping {group.title}: No permission")
+                    else:
+                        logger.warning(f"[{acc_id}] Error: {error_str[:100]}")
+                
                 await asyncio.sleep(random.randint(MIN_INTERVAL, MAX_INTERVAL))
             
+            if stop_flags.get(acc_id, False):
+                break
+                
             cycle_count += 1
             logger.info(f"[{acc_id}] Cycle {cycle_count} done. Waiting {CYCLE_WAIT}s...")
             
-            if cycle_count % 15 == 0:
+            # Check stop flag during cycle wait
+            for i in range(CYCLE_WAIT):
+                if stop_flags.get(acc_id, False):
+                    break
+                await asyncio.sleep(1)
+            
+            # Reconnect every 10 cycles
+            if cycle_count % 10 == 0 and not stop_flags.get(acc_id, False):
                 logger.info(f"[{acc_id}] Reconnecting...")
                 await client.disconnect()
                 await asyncio.sleep(3)
+                if stop_flags.get(acc_id, False):
+                    break
                 client = await get_client(acc_id, api_id, api_hash, session_string)
                 account_clients[acc_id] = client
                 
+                # Re-fetch groups
                 dialogs = await client(GetDialogsRequest(
                     offset_date=None, offset_id=0,
                     offset_peer=InputPeerEmpty(), limit=200, hash=0
@@ -178,26 +216,43 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
                 for dialog in dialogs.dialogs:
                     try:
                         entity = await client.get_entity(dialog.peer)
-                        if hasattr(entity, 'title'):
+                        if hasattr(entity, 'title') and hasattr(entity, 'megagroup'):
+                            if entity.megagroup:
+                                groups.append(entity)
+                        elif hasattr(entity, 'title') and not hasattr(entity, 'broadcast'):
                             groups.append(entity)
                     except:
                         pass
                 logger.info(f"[{acc_id}] Reconnected. {len(groups)} groups.")
             
-            await asyncio.sleep(CYCLE_WAIT)
-            
     except asyncio.CancelledError:
-        logger.info(f"[{acc_id}] Stopped by user")
+        logger.info(f"[{acc_id}] Cancelled by user")
     except Exception as e:
         logger.error(f"[{acc_id}] Fatal error: {e}", exc_info=True)
     finally:
         account_stats[acc_id]['running'] = False
+        stop_flags[acc_id] = True
         if acc_id in account_clients:
             try:
                 await account_clients[acc_id].disconnect()
             except:
                 pass
             del account_clients[acc_id]
+        logger.info(f"[{acc_id}] Fully stopped")
+
+def stop_account(acc_id):
+    """Stop a specific account"""
+    stop_flags[acc_id] = True
+    if acc_id in running_tasks and not running_tasks[acc_id].done():
+        running_tasks[acc_id].cancel()
+        del running_tasks[acc_id]
+    account_stats[acc_id]['running'] = False
+    logger.info(f"[{acc_id}] Stop signal sent")
+
+def stop_all_accounts():
+    """Stop all accounts"""
+    for acc in ACTIVE_ACCOUNTS:
+        stop_account(acc['id'])
 
 async def start(update: Update, context):
     user_id = update.effective_user.id
@@ -242,6 +297,7 @@ async def button_handler(update: Update, context):
             if account_stats[acc_id]['running']:
                 text += f"✅ {acc_id} ইতিমধ্যে চলছে\n"
             else:
+                stop_flags[acc_id] = False
                 task = asyncio.create_task(run_account_messaging(acc_id, acc['api_id'], acc['api_hash'], acc['session']))
                 running_tasks[acc_id] = task
                 text += f"▶️ {acc_id} চালু হয়েছে\n"
@@ -251,28 +307,22 @@ async def button_handler(update: Update, context):
     
     elif query.data == 'stop_all':
         text = ""
-        for acc_id in list(running_tasks.keys()):
-            if not running_tasks[acc_id].done():
-                running_tasks[acc_id].cancel()
-                text += f"⏹️ {acc_id} বন্ধ\n"
-            del running_tasks[acc_id]
         for acc in ACTIVE_ACCOUNTS:
-            account_stats[acc['id']]['running'] = False
+            acc_id = acc['id']
+            if account_stats[acc_id]['running']:
+                stop_account(acc_id)
+                text += f"⏹️ {acc_id} বন্ধ করা হচ্ছে...\n"
+            else:
+                text += f"❌ {acc_id} ইতিমধ্যে বন্ধ\n"
         if not text:
             text = "❌ কিছুই চলছে না!"
         await query.edit_message_text(text)
+        # Wait a moment then show updated status
+        await asyncio.sleep(2)
+        await show_status_auto(query)
     
     elif query.data == 'status':
-        total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACTIVE_ACCOUNTS)
-        text = "📊 *স্ট্যাটাস*\n\n"
-        for acc in ACTIVE_ACCOUNTS:
-            aid = acc['id']
-            status = '🟢 চলছে' if account_stats[aid]['running'] else '🔴 বন্ধ'
-            text += f"• {aid}: {status} | পাঠিয়েছে: {account_stats[aid]['sent']}\n"
-        text += f"\n📝 `{MESSAGE[:40]}`"
-        text += f"\n⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s"
-        text += f"\n📨 মোট: {total_sent}"
-        await query.edit_message_text(text, parse_mode='Markdown')
+        await show_status_auto(query)
     
     elif query.data == 'settings':
         kb = InlineKeyboardMarkup([
@@ -306,11 +356,11 @@ async def button_handler(update: Update, context):
     
     elif query.data == 'set_min':
         context.user_data['awaiting'] = 'min'
-        await query.edit_message_text(f"মিনিমাম ডেল (সেকেন্ড) দিন:\nবর্তমান: {MIN_INTERVAL}s\n\nযেমন: 2")
+        await query.edit_message_text(f"মিনিমাম ডেল (সেকেন্ড) দিন:\nবর্তমান: {MIN_INTERVAL}s\n\nযেমন: 5")
     
     elif query.data == 'set_max':
         context.user_data['awaiting'] = 'max'
-        await query.edit_message_text(f"ম্যাক্সিমাম ডেল (সেকেন্ড) দিন:\nবর্তমান: {MAX_INTERVAL}s\n\nযেমন: 5")
+        await query.edit_message_text(f"ম্যাক্সিমাম ডেল (সেকেন্ড) দিন:\nবর্তমান: {MAX_INTERVAL}s\n\nযেমন: 10")
     
     elif query.data == 'set_cycle':
         context.user_data['awaiting'] = 'cycle'
@@ -347,37 +397,36 @@ async def button_handler(update: Update, context):
         for acc in ACTIVE_ACCOUNTS:
             aid = acc['id']
             try:
-                if aid in running_tasks and not running_tasks[aid].done():
-                    running_tasks[aid].cancel()
-                    del running_tasks[aid]
-                account_stats[aid]['running'] = False
+                # First stop if running
+                if account_stats[aid]['running']:
+                    stop_account(aid)
+                    await asyncio.sleep(2)
+                
+                # Test session
                 client = await get_client(aid, acc['api_id'], acc['api_hash'], acc['session'])
                 await client.disconnect()
                 text += f"✅ {aid}: Session OK\n"
             except Exception as e:
                 text += f"❌ {aid}: {str(e)[:50]}\n"
         await query.edit_message_text(text)
+        await asyncio.sleep(2)
+        await start(update, context)
     
     elif query.data == 'back_main':
-        total_accounts = len(ACTIVE_ACCOUNTS)
-        running_count = sum(1 for acc in ACTIVE_ACCOUNTS if account_stats[acc['id']]['running'])
-        total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACTIVE_ACCOUNTS)
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("▶️ সব চালু", callback_data='start_all'),
-             InlineKeyboardButton("⏹️ সব বন্ধ", callback_data='stop_all')],
-            [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
-            [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
-            [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
-            [InlineKeyboardButton("🔄 Session Refresh", callback_data='refresh_all')]
-        ])
-        await query.edit_message_text(
-            f"🤖 *ম্যাসেজিং বট*\n\n"
-            f"📊 চলছে: {running_count}/{total_accounts}\n"
-            f"📝 `{MESSAGE[:30]}...`\n"
-            f"⚡ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s\n"
-            f"📨 মোট পাঠিয়েছে: {total_sent}",
-            parse_mode='Markdown', reply_markup=kb
-        )
+        await start(update, context)
+
+async def show_status_auto(query):
+    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACTIVE_ACCOUNTS)
+    text = "📊 *স্ট্যাটাস*\n\n"
+    for acc in ACTIVE_ACCOUNTS:
+        aid = acc['id']
+        status = '🟢 চলছে' if account_stats[aid]['running'] else '🔴 বন্ধ'
+        text += f"• {aid}: {status} | পাঠিয়েছে: {account_stats[aid]['sent']}\n"
+    text += f"\n📝 `{MESSAGE[:40]}`"
+    text += f"\n⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s"
+    text += f"\n📨 মোট: {total_sent}"
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]])
+    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=kb)
 
 async def text_handler(update: Update, context):
     if update.effective_user.id != OWNER_ID:
