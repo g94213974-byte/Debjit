@@ -25,24 +25,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 60, flush=True)
-print("🤖 3-ACCOUNT BOT STARTING...", flush=True)
+print("🤖 10-ACCOUNT MASS MESSAGING BOT", flush=True)
 print("=" * 60, flush=True)
 
 # ====== Environment Variables ======
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 
-API_ID_1 = int(os.environ.get("API_ID_1", "0"))
-API_HASH_1 = os.environ.get("API_HASH_1", "")
-SESSION_1 = os.environ.get("SESSION_1", "")
+# 10 টা একাউন্টের জন্য এনভায়রনমেন্ট ভেরিয়েবল
+API_IDS = []
+API_HASHES = []
+SESSIONS = []
 
-API_ID_2 = int(os.environ.get("API_ID_2", "0"))
-API_HASH_2 = os.environ.get("API_HASH_2", "")
-SESSION_2 = os.environ.get("SESSION_2", "")
-
-API_ID_3 = int(os.environ.get("API_ID_3", "0"))
-API_HASH_3 = os.environ.get("API_HASH_3", "")
-SESSION_3 = os.environ.get("SESSION_3", "")
+for i in range(1, 11):
+    api_id = os.environ.get(f"API_ID_{i}")
+    api_hash = os.environ.get(f"API_HASH_{i}")
+    session = os.environ.get(f"SESSION_{i}")
+    API_IDS.append(int(api_id) if api_id else 0)
+    API_HASHES.append(api_hash if api_hash else "")
+    SESSIONS.append(session if session else "")
 
 MESSAGE = os.environ.get("MESSAGE", "𝟭𝟬 𝗠𝗜𝗡 𝗩𝗖 ₹𝟰𝟱 𝗕𝗔𝗕𝗬😘")
 MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "5"))
@@ -50,49 +51,48 @@ MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "8"))
 CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "30"))
 # ===================================
 
-print("📋 Checking environment variables...", flush=True)
-print(f"   BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}", flush=True)
-print(f"   OWNER_ID: {OWNER_ID}", flush=True)
-print(f"   API_ID_1: {API_ID_1}", flush=True)
-print(f"   API_HASH_1: {'✅' if API_HASH_1 else '❌'}", flush=True)
-print(f"   SESSION_1: {'✅' if SESSION_1 else '❌'}", flush=True)
+# শুধু valid (কনফিগার করা) একাউন্টগুলো নিচ্ছি
+ACCOUNTS = []
+for i in range(10):
+    if all([API_IDS[i], API_HASHES[i], SESSIONS[i]]):
+        ACCOUNTS.append({
+            'id': f'acc{i+1}',
+            'api_id': API_IDS[i],
+            'api_hash': API_HASHES[i],
+            'session': SESSIONS[i]
+        })
 
-if not all([BOT_TOKEN, OWNER_ID, API_ID_1, API_HASH_1, SESSION_1]):
-    print("\n❌ ERROR: Account 1 credentials missing!", flush=True)
+print(f"📊 মোট কনফিগার করা একাউন্ট: {len(ACCOUNTS)}/10", flush=True)
+for acc in ACCOUNTS:
+    print(f"   ✅ {acc['id']}: সেটআপ করা আছে", flush=True)
+
+if len(ACCOUNTS) == 0:
+    print("\n❌ ERROR: কোনো একাউন্ট কনফিগার করা নেই!", flush=True)
+    print("   API_ID_1, API_HASH_1, SESSION_1 সেট করতে ভুলো না।", flush=True)
+    sys.exit(1)
+
+if not all([BOT_TOKEN, OWNER_ID]):
+    print("\n❌ ERROR: BOT_TOKEN বা OWNER_ID দেওয়া হয়নি!", flush=True)
     sys.exit(1)
 
 # Global variables
 running_tasks = {}
 stop_flags = {}
 account_clients = {}
-account_stats = {
-    'acc1': {'sent': 0, 'running': False},
-    'acc2': {'sent': 0, 'running': False},
-    'acc3': {'sent': 0, 'running': False}
-}
+account_stats = {}
+for acc in ACCOUNTS:
+    account_stats[acc['id']] = {'sent': 0, 'running': False}
+
 data_file = "bot_data.json"
 
-ACCOUNTS = [
-    {'id': 'acc1', 'api_id': API_ID_1, 'api_hash': API_HASH_1, 'session': SESSION_1},
-    {'id': 'acc2', 'api_id': API_ID_2, 'api_hash': API_HASH_2, 'session': SESSION_2},
-    {'id': 'acc3', 'api_id': API_ID_3, 'api_hash': API_HASH_3, 'session': SESSION_3}
-]
-
-ACTIVE_ACCOUNTS = [acc for acc in ACCOUNTS if all([acc['api_id'], acc['api_hash'], acc['session']])]
-
-print(f"📊 Active accounts: {len(ACTIVE_ACCOUNTS)}", flush=True)
-for acc in ACTIVE_ACCOUNTS:
-    print(f"   ✅ {acc['id']}: configured", flush=True)
-
-
-# ====== Flask Web Server (Render Web Service এর জন্য) ======
+# ====== Flask Web Server ======
 web_app = Flask(__name__)
 
 @web_app.route("/")
 def home():
-    running_count = sum(1 for acc in ACTIVE_ACCOUNTS if account_stats[acc['id']]['running'])
-    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACTIVE_ACCOUNTS)
-    return f"✅ Bot Running | Active: {running_count}/{len(ACTIVE_ACCOUNTS)} | Total Sent: {total_sent}"
+    running_count = sum(1 for acc in ACCOUNTS if account_stats[acc['id']]['running'])
+    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACCOUNTS)
+    return f"✅ Bot Running | Active: {running_count}/{len(ACCOUNTS)} | Total Sent: {total_sent}"
 
 @web_app.route("/health")
 def health():
@@ -115,7 +115,8 @@ def load_data():
                 MAX_INTERVAL = d.get('max_interval', MAX_INTERVAL)
                 CYCLE_WAIT = d.get('cycle_wait', CYCLE_WAIT)
                 saved_stats = d.get('stats', {})
-                for acc_id in account_stats:
+                for acc in ACCOUNTS:
+                    acc_id = acc['id']
                     if acc_id in saved_stats:
                         account_stats[acc_id]['sent'] = saved_stats[acc_id].get('sent', 0)
         except:
@@ -127,7 +128,7 @@ def save_data():
         'min_interval': MIN_INTERVAL,
         'max_interval': MAX_INTERVAL,
         'cycle_wait': CYCLE_WAIT,
-        'stats': {acc_id: {'sent': account_stats[acc_id]['sent']} for acc_id in account_stats}
+        'stats': {acc['id']: {'sent': account_stats[acc['id']]['sent']} for acc in ACCOUNTS}
     }
     try:
         with open(data_file, 'w') as f:
@@ -135,25 +136,33 @@ def save_data():
     except:
         pass
 
+
+# ⭐ ফিক্স: receive_updates=False — অযথা আপডেট সিঙ্ক বন্ধ
 async def get_client(acc_id, api_id, api_hash, session_string):
-    client = TelegramClient(StringSession(session_string), api_id, api_hash)
+    client = TelegramClient(
+        StringSession(session_string), 
+        api_id, 
+        api_hash,
+        receive_updates=False           # ← মেইন ফিক্স
+    )
     await client.start()
     me = await client.get_me()
-    logger.info(f"✅ [{acc_id}] Logged in: {me.first_name}")
+    logger.info(f"✅ [{acc_id}] লগইন: {me.first_name} {me.last_name or ''}")
     return client
+
 
 async def run_account_messaging(acc_id, api_id, api_hash, session_string):
     global account_stats, stop_flags
     
     stop_flags[acc_id] = False
-    logger.info(f"🚀 [{acc_id}] Starting...")
+    logger.info(f"🚀 [{acc_id}] শুরু হচ্ছে...")
     
     try:
         client = await get_client(acc_id, api_id, api_hash, session_string)
         account_clients[acc_id] = client
         account_stats[acc_id]['running'] = True
         
-        # Get all groups
+        # সব গ্রুপ লিস্ট নিচ্ছি
         dialogs = await client(GetDialogsRequest(
             offset_date=None, offset_id=0,
             offset_peer=InputPeerEmpty(), limit=200, hash=0
@@ -171,11 +180,11 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
                 pass
         
         if not groups:
-            logger.warning(f"[{acc_id}] No groups found!")
+            logger.warning(f"[{acc_id}] কোনো গ্রুপ পাওয়া যায়নি!")
             account_stats[acc_id]['running'] = False
             return
         
-        logger.info(f"[{acc_id}] Sending to {len(groups)} groups...")
+        logger.info(f"[{acc_id}] {len(groups)} টি গ্রুপে মেসেজ যাচ্ছে...")
         cycle_count = 0
         
         while not stop_flags.get(acc_id, False):
@@ -185,12 +194,12 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
                     
                 try:
                     await client.send_message(group, MESSAGE)
-                    logger.info(f"✅ [{acc_id}] Sent to {group.title}")
+                    logger.info(f"✅ [{acc_id}] পাঠানো হয়েছে → {group.title}")
                     account_stats[acc_id]['sent'] += 1
                     save_data()
                 except FloodWaitError as e:
                     wait_time = e.seconds
-                    logger.warning(f"[{acc_id}] Flood wait: {wait_time}s")
+                    logger.warning(f"[{acc_id}] Flood ওয়েট: {wait_time}s")
                     for i in range(wait_time):
                         if stop_flags.get(acc_id, False):
                             break
@@ -198,26 +207,27 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
                 except Exception as e:
                     error_str = str(e)
                     if "admin privileges" in error_str.lower() or "can't write" in error_str.lower():
-                        logger.warning(f"[{acc_id}] Skipping {group.title}: No permission")
+                        logger.warning(f"[{acc_id}] স্কিপ {group.title}: পারমিশন নেই")
                     else:
-                        logger.warning(f"[{acc_id}] Error: {error_str[:100]}")
+                        logger.warning(f"[{acc_id}] এরর: {error_str[:100]}")
                 
+                # র‍্যান্ডম ডিলে
                 await asyncio.sleep(random.randint(MIN_INTERVAL, MAX_INTERVAL))
             
             if stop_flags.get(acc_id, False):
                 break
                 
             cycle_count += 1
-            logger.info(f"[{acc_id}] Cycle {cycle_count} done. Waiting {CYCLE_WAIT}s...")
+            logger.info(f"[{acc_id}] সাইকেল {cycle_count} শেষ। {CYCLE_WAIT}s অপেক্ষা...")
             
             for i in range(CYCLE_WAIT):
                 if stop_flags.get(acc_id, False):
                     break
                 await asyncio.sleep(1)
             
-            # Reconnect every 10 cycles
-            if cycle_count % 10 == 0 and not stop_flags.get(acc_id, False):
-                logger.info(f"[{acc_id}] Reconnecting...")
+            # ⭐ ফিক্স: রিকানেক্ট ১০ এর বদলে ৫০ সাইকেলে
+            if cycle_count % 50 == 0 and not stop_flags.get(acc_id, False):
+                logger.info(f"[{acc_id}] রিকানেক্ট হচ্ছে...")
                 await client.disconnect()
                 await asyncio.sleep(3)
                 if stop_flags.get(acc_id, False):
@@ -225,6 +235,7 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
                 client = await get_client(acc_id, api_id, api_hash, session_string)
                 account_clients[acc_id] = client
                 
+                # আবার গ্রুপ লিস্ট আপডেট
                 dialogs = await client(GetDialogsRequest(
                     offset_date=None, offset_id=0,
                     offset_peer=InputPeerEmpty(), limit=200, hash=0
@@ -240,12 +251,12 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
                             groups.append(entity)
                     except:
                         pass
-                logger.info(f"[{acc_id}] Reconnected. {len(groups)} groups.")
+                logger.info(f"[{acc_id}] রিকানেক্ট সম্পন্ন। {len(groups)} টি গ্রুপ।")
             
     except asyncio.CancelledError:
-        logger.info(f"[{acc_id}] Cancelled by user")
+        logger.info(f"[{acc_id}] ইউজার বন্ধ করেছেন")
     except Exception as e:
-        logger.error(f"[{acc_id}] Fatal error: {e}", exc_info=True)
+        logger.error(f"[{acc_id}] মারাত্মক এরর: {e}", exc_info=True)
     finally:
         account_stats[acc_id]['running'] = False
         stop_flags[acc_id] = True
@@ -255,7 +266,8 @@ async def run_account_messaging(acc_id, api_id, api_hash, session_string):
             except:
                 pass
             del account_clients[acc_id]
-        logger.info(f"[{acc_id}] Fully stopped")
+        logger.info(f"[{acc_id}] সম্পূর্ণ বন্ধ")
+
 
 def stop_account(acc_id):
     stop_flags[acc_id] = True
@@ -263,11 +275,14 @@ def stop_account(acc_id):
         running_tasks[acc_id].cancel()
         del running_tasks[acc_id]
     account_stats[acc_id]['running'] = False
-    logger.info(f"[{acc_id}] Stop signal sent")
+    logger.info(f"[{acc_id}] স্টপ সিগন্যাল পাঠানো হয়েছে")
 
 def stop_all_accounts():
-    for acc in ACTIVE_ACCOUNTS:
+    for acc in ACCOUNTS:
         stop_account(acc['id'])
+
+
+# ==================== টেলিগ্রাম বট হ্যান্ডলার ====================
 
 async def start(update: Update, context):
     user_id = update.effective_user.id
@@ -275,9 +290,9 @@ async def start(update: Update, context):
         await update.message.reply_text("❌ অনুমতি নেই!")
         return
     
-    total_accounts = len(ACTIVE_ACCOUNTS)
-    running_count = sum(1 for acc in ACTIVE_ACCOUNTS if account_stats[acc['id']]['running'])
-    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACTIVE_ACCOUNTS)
+    total_accounts = len(ACCOUNTS)
+    running_count = sum(1 for acc in ACCOUNTS if account_stats[acc['id']]['running'])
+    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACCOUNTS)
     
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("▶️ সব চালু", callback_data='start_all'),
@@ -289,13 +304,14 @@ async def start(update: Update, context):
     ])
     
     await update.message.reply_text(
-        f"🤖 *ম্যাসেজিং বট - ৩ একাউন্ট*\n\n"
+        f"🤖 *ম্যাসেজিং বট - {total_accounts} একাউন্ট*\n\n"
         f"📊 চলছে: {running_count}/{total_accounts}\n"
         f"📝 `{MESSAGE[:30]}...`\n"
         f"⚡ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s\n"
         f"📨 মোট পাঠিয়েছে: {total_sent}",
         parse_mode='Markdown', reply_markup=kb
     )
+
 
 async def button_handler(update: Update, context):
     query = update.callback_query
@@ -307,7 +323,7 @@ async def button_handler(update: Update, context):
     
     if query.data == 'start_all':
         text = ""
-        for acc in ACTIVE_ACCOUNTS:
+        for acc in ACCOUNTS:
             acc_id = acc['id']
             if account_stats[acc_id]['running']:
                 text += f"✅ {acc_id} ইতিমধ্যে চলছে\n"
@@ -322,7 +338,7 @@ async def button_handler(update: Update, context):
     
     elif query.data == 'stop_all':
         text = ""
-        for acc in ACTIVE_ACCOUNTS:
+        for acc in ACCOUNTS:
             acc_id = acc['id']
             if account_stats[acc_id]['running']:
                 stop_account(acc_id)
@@ -383,7 +399,7 @@ async def button_handler(update: Update, context):
     elif query.data == 'groups':
         await query.edit_message_text("👥 *গ্রুপ লিস্ট*\nলোড হচ্ছে...", parse_mode='Markdown')
         try:
-            acc = ACTIVE_ACCOUNTS[0]
+            acc = ACCOUNTS[0]  # প্রথম একাউন্ট ব্যবহার করবে
             client = await get_client(acc['id'], acc['api_id'], acc['api_hash'], acc['session'])
             dialogs = await client(GetDialogsRequest(
                 offset_date=None, offset_id=0,
@@ -408,7 +424,7 @@ async def button_handler(update: Update, context):
     
     elif query.data == 'refresh_all':
         text = "🔄 Session রিনিউ করা হচ্ছে...\n\n"
-        for acc in ACTIVE_ACCOUNTS:
+        for acc in ACCOUNTS:
             aid = acc['id']
             try:
                 if account_stats[aid]['running']:
@@ -421,15 +437,36 @@ async def button_handler(update: Update, context):
                 text += f"❌ {aid}: {str(e)[:50]}\n"
         await query.edit_message_text(text)
         await asyncio.sleep(2)
-        await start(update, context)
+        # স্টার্ট মেন্যু দেখাচ্ছি
+        total_accounts = len(ACCOUNTS)
+        running_count = sum(1 for a in ACCOUNTS if account_stats[a['id']]['running'])
+        total_sent = sum(account_stats[a['id']]['sent'] for a in ACCOUNTS)
+        
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("▶️ সব চালু", callback_data='start_all'),
+             InlineKeyboardButton("⏹️ সব বন্ধ", callback_data='stop_all')],
+            [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
+            [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
+            [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
+            [InlineKeyboardButton("🔄 Session Refresh", callback_data='refresh_all')]
+        ])
+        await query.message.reply_text(
+            f"🤖 *ম্যাসেজিং বট - {total_accounts} একাউন্ট*\n\n"
+            f"📊 চলছে: {running_count}/{total_accounts}\n"
+            f"📝 `{MESSAGE[:30]}...`\n"
+            f"⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s\n"
+            f"📨 মোট পাঠিয়েছে: {total_sent}",
+            parse_mode='Markdown', reply_markup=kb
+        )
     
     elif query.data == 'back_main':
         await start(update, context)
 
+
 async def show_status_auto(query):
-    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACTIVE_ACCOUNTS)
+    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACCOUNTS)
     text = "📊 *স্ট্যাটাস*\n\n"
-    for acc in ACTIVE_ACCOUNTS:
+    for acc in ACCOUNTS:
         aid = acc['id']
         status = '🟢 চলছে' if account_stats[aid]['running'] else '🔴 বন্ধ'
         text += f"• {aid}: {status} | পাঠিয়েছে: {account_stats[aid]['sent']}\n"
@@ -438,6 +475,7 @@ async def show_status_auto(query):
     text += f"\n📨 মোট: {total_sent}"
     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]])
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=kb)
+
 
 async def text_handler(update: Update, context):
     if update.effective_user.id != OWNER_ID:
@@ -496,24 +534,25 @@ async def text_handler(update: Update, context):
 
 async def main():
     print("=" * 50, flush=True)
-    print("🤖 3-ACCOUNT MASS MESSAGING BOT", flush=True)
+    print(f"🤖 {len(ACCOUNTS)}-ACCOUNT MASS MESSAGING BOT", flush=True)
     print("=" * 50, flush=True)
     
     print(f"🐍 Python version: {sys.version}", flush=True)
     load_data()
-    print(f"📂 Data loaded successfully", flush=True)
+    print(f"📂 ডাটা লোড করা হয়েছে", flush=True)
     
-    print("\n🔐 Quick session check...", flush=True)
-    try:
-        print(f"   Checking acc1...", end=' ', flush=True)
-        client = await get_client('acc1', API_ID_1, API_HASH_1, SESSION_1)
-        await client.disconnect()
-        print("✅ OK", flush=True)
-    except Exception as e:
-        print(f"❌ Failed: {e}", flush=True)
-        sys.exit(1)
+    print("\n🔐 Session চেক করা হচ্ছে...", flush=True)
+    for acc in ACCOUNTS:
+        try:
+            print(f"   {acc['id']} চেক...", end=' ', flush=True)
+            client = await get_client(acc['id'], acc['api_id'], acc['api_hash'], acc['session'])
+            await client.disconnect()
+            print("✅ OK", flush=True)
+        except Exception as e:
+            print(f"❌ ব্যর্থ: {e}", flush=True)
+            sys.exit(1)
     
-    print("\n🤖 Setting up bot...", flush=True)
+    print("\n🤖 বট সেটআপ হচ্ছে...", flush=True)
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
@@ -521,15 +560,20 @@ async def main():
     
     await app.initialize()
     await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
-    print("✅✅✅ BOT IS RUNNING! Send /start in Telegram ✅✅✅", flush=True)
+    
+    # ⭐ ফিক্স: পোলিং টাইমআউট যোগ
+    await app.updater.start_polling(
+        drop_pending_updates=True,
+        timeout=30          # ← পোলিং টাইমআউট
+    )
+    print("✅✅✅ BOT চালু! টেলিগ্রামে /start দিন ✅✅✅", flush=True)
     
     try:
         await asyncio.Event().wait()
     except asyncio.CancelledError:
         pass
     finally:
-        logger.info("🛑 Shutting down...")
+        logger.info("🛑 বন্ধ হচ্ছে...")
         stop_all_accounts()
         await asyncio.sleep(1)
         await app.stop()
@@ -537,18 +581,16 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Flask থ্রেড স্টার্ট করো (Render Web Service এর জন্য)
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    print(f"🌐 Flask web server started on port {os.environ.get('PORT', 10000)}", flush=True)
+    print(f"🌐 Flask ওয়েব সার্ভার পোর্ট {os.environ.get('PORT', 10000)} এ শুরু", flush=True)
     
-    # মূল async bot চালাও
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("⛔ Stopped by keyboard interrupt")
+        logger.info("⛔ Keyboard interrupt দিয়ে বন্ধ")
     except Exception as e:
-        print(f"\n❌❌❌ FATAL ERROR: {e}", flush=True)
+        print(f"\n❌❌❌ মারাত্মক এরর: {e}", flush=True)
         import traceback
         traceback.print_exc()
         sys.exit(1)
