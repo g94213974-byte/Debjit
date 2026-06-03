@@ -302,10 +302,43 @@ def stop_all_accounts():
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """স্টার্ট কমান্ড"""
+
+    print(f"START COMMAND FROM: {update.effective_user.id}", flush=True)
+
     user_id = update.effective_user.id
+
     if user_id != OWNER_ID:
-        await update.message.reply_text("❌ অনুমতি নেই!")
+        await update.message.reply_text(
+            f"❌ অনুমতি নেই!\nYour ID: {user_id}\nOwner ID: {OWNER_ID}"
+        )
         return
+
+    total = len(ACCOUNTS)
+    running = sum(1 for acc in ACCOUNTS if account_stats[acc['id']]['running'])
+    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACCOUNTS)
+
+    keyboard = [
+        [InlineKeyboardButton("▶️ সব চালু", callback_data='start_all'),
+         InlineKeyboardButton("⏹️ সব বন্ধ", callback_data='stop_all')],
+        [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
+        [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
+        [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    text = (
+        f"🤖 *ম্যাসেজিং বট - {total} একাউন্ট*\n\n"
+        f"📊 চলছে: {running}/{total}\n"
+        f"📝 `{MESSAGE[:35]}...`\n"
+        f"⚡ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s\n"
+        f"📨 মোট পাঠিয়েছে: {total_sent}"
+    )
+
+    await update.message.reply_text(
+        text,
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
     
     total = len(ACCOUNTS)
     running = sum(1 for acc in ACCOUNTS if account_stats[acc['id']]['running'])
