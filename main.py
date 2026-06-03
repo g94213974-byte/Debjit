@@ -6,6 +6,7 @@ import random
 import logging
 import json
 import threading
+import httpx
 from datetime import datetime
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -16,7 +17,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
 
-# লগিং সেটআপ
+# লগিং
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -26,14 +27,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 60, flush=True)
-print("🚀 BOT STARTING...", flush=True)
+print("🤖 BOT STARTING...", flush=True)
 print("=" * 60, flush=True)
 
 # ====== Environment Variables ======
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 
-# ৩টা একাউন্ট
 API_ID_1 = int(os.environ.get("API_ID_1", "0"))
 API_HASH_1 = os.environ.get("API_HASH_1", "")
 SESSION_1 = os.environ.get("SESSION_1", "")
@@ -52,11 +52,11 @@ MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "8"))
 CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "30"))
 # ===================================
 
-# চেক করা
+# চেক
 print(f"📋 BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}", flush=True)
 print(f"📋 OWNER_ID: {OWNER_ID}", flush=True)
 
-# একাউন্ট লিস্ট বানানো (শুধু valid গুলো)
+# একাউন্ট লিস্ট
 ACCOUNTS = []
 acc_configs = [
     ('acc1', API_ID_1, API_HASH_1, SESSION_1),
@@ -146,13 +146,13 @@ def save_data():
         pass
 
 
-# ⭐ ফিক্স: receive_updates=False
+# ⭐ ফিক্স: receive_updates=False — অযথা আপডেট সিঙ্ক বন্ধ
 async def get_client(api_id, api_hash, session_string):
     client = TelegramClient(
         StringSession(session_string),
         api_id,
         api_hash,
-        receive_updates=False
+        receive_updates=False  # ← মেইন ফিক্স
     )
     await client.start()
     return client
@@ -173,7 +173,6 @@ async def get_groups(client):
             try:
                 entity = await client.get_entity(dialog.peer)
                 if hasattr(entity, 'title'):
-                    # মেগাগ্রুপ বা গ্রুপ চেক
                     is_group = hasattr(entity, 'megagroup') and entity.megagroup
                     is_not_broadcast = not (hasattr(entity, 'broadcast') and entity.broadcast)
                     if is_group or is_not_broadcast:
@@ -201,7 +200,6 @@ async def run_account_messaging(acc):
         me = await client.get_me()
         logger.info(f"✅ [{acc_id}] লগইন: {me.first_name}")
         
-        # গ্রুপ লিস্ট বের করা
         groups = await get_groups(client)
         
         if not groups:
@@ -238,7 +236,6 @@ async def run_account_messaging(acc):
                     else:
                         logger.warning(f"[{acc_id}] এরর: {err[:80]}")
                 
-                # র‍্যান্ডম ডিলে
                 await asyncio.sleep(random.randint(MIN_INTERVAL, MAX_INTERVAL))
             
             if stop_flags.get(acc_id, False):
@@ -247,7 +244,6 @@ async def run_account_messaging(acc):
             cycle_count += 1
             logger.info(f"[{acc_id}] সাইকেল {cycle_count} শেষ। {CYCLE_WAIT}s বিরতি...")
             
-            # সাইকেল ওয়েট
             for i in range(CYCLE_WAIT):
                 if stop_flags.get(acc_id, False):
                     break
@@ -284,7 +280,7 @@ async def run_account_messaging(acc):
 
 
 def stop_account(acc_id):
-    """একাউন্ট বন্ধ করা"""
+    """একাউন্ট বন্ধ"""
     stop_flags[acc_id] = True
     if acc_id in running_tasks and not running_tasks[acc_id].done():
         running_tasks[acc_id].cancel()
@@ -293,7 +289,6 @@ def stop_account(acc_id):
         except:
             pass
     account_stats[acc_id]['running'] = False
-    logger.info(f"[{acc_id}] স্টপ সিগন্যাল পাঠানো হয়েছে")
 
 def stop_all_accounts():
     """সব একাউন্ট বন্ধ"""
@@ -346,7 +341,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT
     
-    # === সব চালু ===
     if query.data == 'start_all':
         text_parts = []
         for acc in ACCOUNTS:
@@ -363,7 +357,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(2)
         await show_status(query)
     
-    # === সব বন্ধ ===
     elif query.data == 'stop_all':
         text_parts = []
         for acc in ACCOUNTS:
@@ -378,11 +371,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(2)
         await show_status(query)
     
-    # === স্ট্যাটাস ===
     elif query.data == 'status':
         await show_status(query)
     
-    # === সেটিংস ===
     elif query.data == 'settings':
         keyboard = [
             [InlineKeyboardButton("✏️ মেসেজ পরিবর্তন", callback_data='edit_msg')],
@@ -399,7 +390,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
     
-    # === মেসেজ এডিট ===
     elif query.data == 'edit_msg':
         context.user_data['awaiting'] = 'message'
         await query.edit_message_text(
@@ -407,7 +397,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
     
-    # === স্পীড সেটিংস ===
     elif query.data == 'edit_speed':
         keyboard = [
             [InlineKeyboardButton(f"📉 মিন: {MIN_INTERVAL}s", callback_data='set_min')],
@@ -430,7 +419,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting'] = 'cycle'
         await query.edit_message_text(f"সাইকেল ওয়েট (সেকেন্ড) দিন:\nবর্তমান: {CYCLE_WAIT}s\n\nযেমন: 30")
     
-    # === গ্রুপ লিস্ট ===
     elif query.data == 'groups':
         await query.edit_message_text("👥 *গ্রুপ লিস্ট*\nলোড হচ্ছে...", parse_mode='Markdown')
         try:
@@ -451,7 +439,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await query.edit_message_text(f"❌ Error: {str(e)[:100]}")
     
-    # === ফিরে ===
     elif query.data == 'back_main':
         total = len(ACCOUNTS)
         running = sum(1 for acc in ACCOUNTS if account_stats[acc['id']]['running'])
@@ -557,22 +544,38 @@ async def main():
     print(f"🤖 {len(ACCOUNTS)}-ACCOUNT BOT", flush=True)
     print("=" * 50, flush=True)
     
-    # ডাটা লোড
     load_data()
     print("📂 ডাটা লোড করা হয়েছে", flush=True)
     
-    # বট তৈরি
+    # ✅ ফিক্স: ওয়েবহুক ক্লিয়ার করা (Conflict দূর করার জন্য)
+    try:
+        r = httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true")
+        print(f"✅ ওয়েবহুক ক্লিয়ার: {r.json().get('description', 'OK')}", flush=True)
+    except Exception as e:
+        print(f"⚠️ ওয়েবহুক এরর: {e}", flush=True)
+    
+    # আরো একবার চেক — সব পেন্ডিং আপডেট ক্লিয়ার
+    try:
+        r = httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates", json={"offset": -1, "timeout": 1})
+        updates = r.json().get('result', [])
+        if updates:
+            last_id = updates[-1]['update_id']
+            httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates", json={"offset": last_id + 1, "timeout": 1})
+            print(f"✅ {len(updates)} টি পেন্ডিং আপডেট ক্লিয়ার", flush=True)
+    except:
+        pass
+    
     print("🤖 বট তৈরি হচ্ছে...", flush=True)
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # হ্যান্ডলার যোগ
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CallbackQueryHandler(button_click))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
-    # বট চালু
     await app.initialize()
     await app.start()
+    
+    # ⭐ ফিক্স: পোলিং টাইমআউট সহ
     await app.updater.start_polling(
         drop_pending_updates=True,
         timeout=30
