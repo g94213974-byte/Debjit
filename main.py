@@ -46,6 +46,9 @@ API_ID_3 = int(os.environ.get("API_ID_3", "0"))
 API_HASH_3 = os.environ.get("API_HASH_3", "")
 SESSION_3 = os.environ.get("SESSION_3", "")
 
+# ====== ডায়নামিক একাউন্টের জন্য ফাইল ======
+DYNAMIC_ACCOUNTS_FILE = "dynamic_accounts.json"
+
 MESSAGE = os.environ.get("MESSAGE", "𝟭𝟬 𝗠𝗜𝗡 𝗩𝗖 ₹𝟰𝟱 𝗕𝗔𝗕𝗬😘")
 MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "5"))
 MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "8"))
@@ -56,8 +59,8 @@ CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "30"))
 print(f"📋 BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}", flush=True)
 print(f"📋 OWNER_ID: {OWNER_ID}", flush=True)
 
-# একাউন্ট লিস্ট
-ACCOUNTS = []
+# একাউন্ট লিস্ট (এনভায়রনমেন্ট থেকে)
+ENV_ACCOUNTS = []
 acc_configs = [
     ('acc1', API_ID_1, API_HASH_1, SESSION_1),
     ('acc2', API_ID_2, API_HASH_2, SESSION_2),
@@ -66,30 +69,101 @@ acc_configs = [
 
 for acc_id, api_id, api_hash, session in acc_configs:
     if api_id and api_hash and session:
-        ACCOUNTS.append({
+        ENV_ACCOUNTS.append({
             'id': acc_id,
             'api_id': api_id,
             'api_hash': api_hash,
-            'session': session
+            'session': session,
+            'type': 'env'
         })
-        print(f"✅ {acc_id}: কনফিগার করা হয়েছে", flush=True)
+        print(f"✅ {acc_id}: এনভায়রনমেন্ট থেকে", flush=True)
 
-print(f"📊 মোট একাউন্ট: {len(ACCOUNTS)}", flush=True)
-
-if not ACCOUNTS:
-    print("❌ কোনো একাউন্ট কনফিগার করা নেই!", flush=True)
-    sys.exit(1)
+print(f"📊 এনভায়রনমেন্ট একাউন্ট: {len(ENV_ACCOUNTS)}", flush=True)
 
 if not BOT_TOKEN or not OWNER_ID:
     print("❌ BOT_TOKEN বা OWNER_ID দেওয়া হয়নি!", flush=True)
     sys.exit(1)
+
+# ====== ডায়নামিক একাউন্ট ম্যানেজমেন্ট ======
+def load_dynamic_accounts():
+    """ডায়নামিক একাউন্ট লোড"""
+    if os.path.exists(DYNAMIC_ACCOUNTS_FILE):
+        try:
+            with open(DYNAMIC_ACCOUNTS_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
+
+def save_dynamic_accounts(accounts):
+    """ডায়নামিক একাউন্ট সেভ"""
+    try:
+        with open(DYNAMIC_ACCOUNTS_FILE, 'w') as f:
+            json.dump(accounts, f, indent=2)
+    except Exception as e:
+        logger.error(f"সেভ এরর: {e}")
+
+def get_all_accounts():
+    """সব একাউন্ট (এনভায়রনমেন্ট + ডায়নামিক)"""
+    dynamic = load_dynamic_accounts()
+    return ENV_ACCOUNTS + dynamic
+
+def add_dynamic_account(api_id, api_hash, session_string):
+    """নতুন ডায়নামিক একাউন্ট যোগ"""
+    accounts = load_dynamic_accounts()
+    
+    # ডুপ্লিকেট চেক
+    for acc in accounts:
+        if acc['session'] == session_string:
+            return False, "এই session уже আছে!"
+    
+    new_id = f"acc_dynamic_{len(accounts) + 1}"
+    accounts.append({
+        'id': new_id,
+        'api_id': api_id,
+        'api_hash': api_hash,
+        'session': session_string,
+        'type': 'dynamic'
+    })
+    save_dynamic_accounts(accounts)
+    return True, new_id
+
+def remove_account_by_id(account_id):
+    """যেকোনো একাউন্ট ডিলিট (এনভি + ডায়নামিক)"""
+    global ENV_ACCOUNTS
+    
+    # প্রথমে ডায়নামিক থেকে চেক
+    accounts = load_dynamic_accounts()
+    for i, acc in enumerate(accounts):
+        if acc['id'] == account_id:
+            accounts.pop(i)
+            save_dynamic_accounts(accounts)
+            return True
+    
+    # এনভায়রনমেন্ট থেকে ডিলিট
+    for i, acc in enumerate(ENV_ACCOUNTS):
+        if acc['id'] == account_id:
+            ENV_ACCOUNTS.pop(i)
+            return True
+    
+    return False
+
+def refresh_account_stats():
+    """নতুন একাউন্টের জন্য স্ট্যাটাস রিফ্রেশ"""
+    for acc in get_all_accounts():
+        if acc['id'] not in account_stats:
+            account_stats[acc['id']] = {'sent': 0, 'running': False}
+            stop_flags[acc['id']] = False
+# ==========================================
 
 # গ্লোবাল ভেরিয়েবল
 running_tasks = {}
 stop_flags = {}
 account_clients = {}
 account_stats = {}
-for acc in ACCOUNTS:
+
+# ইনিশিয়াল স্ট্যাটাস
+for acc in get_all_accounts():
     account_stats[acc['id']] = {'sent': 0, 'running': False}
     stop_flags[acc['id']] = False
 
@@ -100,9 +174,10 @@ web_app = Flask(__name__)
 
 @web_app.route("/")
 def home():
-    running_count = sum(1 for acc in ACCOUNTS if account_stats[acc['id']]['running'])
-    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACCOUNTS)
-    return f"✅ Bot Running | Active: {running_count}/{len(ACCOUNTS)} | Total Sent: {total_sent}"
+    all_accs = get_all_accounts()
+    running_count = sum(1 for acc in all_accs if account_stats.get(acc['id'], {}).get('running', False))
+    total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
+    return f"✅ Bot Running | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Total Sent: {total_sent}"
 
 @web_app.route("/health")
 def health():
@@ -125,7 +200,7 @@ def load_data():
                 MAX_INTERVAL = d.get('max_interval', MAX_INTERVAL)
                 CYCLE_WAIT = d.get('cycle_wait', CYCLE_WAIT)
                 saved_stats = d.get('stats', {})
-                for acc in ACCOUNTS:
+                for acc in get_all_accounts():
                     if acc['id'] in saved_stats:
                         account_stats[acc['id']]['sent'] = saved_stats[acc['id']].get('sent', 0)
         except:
@@ -137,7 +212,7 @@ def save_data():
         'min_interval': MIN_INTERVAL,
         'max_interval': MAX_INTERVAL,
         'cycle_wait': CYCLE_WAIT,
-        'stats': {acc['id']: {'sent': account_stats[acc['id']]['sent']} for acc in ACCOUNTS}
+        'stats': {acc['id']: {'sent': account_stats.get(acc['id'], {}).get('sent', 0)} for acc in get_all_accounts()}
     }
     try:
         with open(data_file, 'w') as f:
@@ -146,13 +221,12 @@ def save_data():
         pass
 
 
-# ⭐ ফিক্স: receive_updates=False — অযথা আপডেট সিঙ্ক বন্ধ
 async def get_client(api_id, api_hash, session_string):
     client = TelegramClient(
         StringSession(session_string),
         api_id,
         api_hash,
-        receive_updates=False  # ← মেইন ফিক্স
+        receive_updates=False
     )
     await client.start()
     return client
@@ -292,8 +366,19 @@ def stop_account(acc_id):
 
 def stop_all_accounts():
     """সব একাউন্ট বন্ধ"""
-    for acc in ACCOUNTS:
+    for acc in get_all_accounts():
         stop_account(acc['id'])
+
+
+async def test_session(api_id, api_hash, session_string):
+    """সেশন টেস্ট"""
+    try:
+        client = await get_client(api_id, api_hash, session_string)
+        me = await client.get_me()
+        await client.disconnect()
+        return True, me.first_name, me.id
+    except Exception as e:
+        return False, str(e), None
 
 
 # ====================
@@ -302,47 +387,17 @@ def stop_all_accounts():
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """স্টার্ট কমান্ড"""
-
-    print(f"START COMMAND FROM: {update.effective_user.id}", flush=True)
-
+    
     user_id = update.effective_user.id
-
+    
     if user_id != OWNER_ID:
-        await update.message.reply_text(
-            f"❌ অনুমতি নেই!\nYour ID: {user_id}\nOwner ID: {OWNER_ID}"
-        )
+        await update.message.reply_text(f"❌ অনুমতি নেই!")
         return
-
-    total = len(ACCOUNTS)
-    running = sum(1 for acc in ACCOUNTS if account_stats[acc['id']]['running'])
-    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACCOUNTS)
-
-    keyboard = [
-        [InlineKeyboardButton("▶️ সব চালু", callback_data='start_all'),
-         InlineKeyboardButton("⏹️ সব বন্ধ", callback_data='stop_all')],
-        [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
-        [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
-        [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    text = (
-        f"🤖 *ম্যাসেজিং বট - {total} একাউন্ট*\n\n"
-        f"📊 চলছে: {running}/{total}\n"
-        f"📝 `{MESSAGE[:35]}...`\n"
-        f"⚡ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s\n"
-        f"📨 মোট পাঠিয়েছে: {total_sent}"
-    )
-
-    await update.message.reply_text(
-        text,
-        parse_mode='Markdown',
-        reply_markup=reply_markup
-    )
     
-    total = len(ACCOUNTS)
-    running = sum(1 for acc in ACCOUNTS if account_stats[acc['id']]['running'])
-    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACCOUNTS)
+    all_accs = get_all_accounts()
+    total = len(all_accs)
+    running = sum(1 for acc in all_accs if account_stats.get(acc['id'], {}).get('running', False))
+    total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
     
     keyboard = [
         [InlineKeyboardButton("▶️ সব চালু", callback_data='start_all'),
@@ -350,6 +405,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
         [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
         [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
+        [InlineKeyboardButton("➕ একাউন্ট যোগ", callback_data='add_account')],
+        [InlineKeyboardButton("🗑 একাউন্ট ডিলিট", callback_data='delete_account')],
+        [InlineKeyboardButton("📋 একাউন্ট লিস্ট", callback_data='account_list')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -376,11 +434,13 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data == 'start_all':
         text_parts = []
-        for acc in ACCOUNTS:
+        for acc in get_all_accounts():
             acc_id = acc['id']
-            if account_stats[acc_id]['running']:
+            if account_stats.get(acc_id, {}).get('running', False):
                 text_parts.append(f"✅ {acc_id} ইতিমধ্যে চলছে")
             else:
+                if acc_id not in stop_flags:
+                    stop_flags[acc_id] = False
                 stop_flags[acc_id] = False
                 task = asyncio.create_task(run_account_messaging(acc))
                 running_tasks[acc_id] = task
@@ -392,9 +452,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == 'stop_all':
         text_parts = []
-        for acc in ACCOUNTS:
+        for acc in get_all_accounts():
             acc_id = acc['id']
-            if account_stats[acc_id]['running']:
+            if account_stats.get(acc_id, {}).get('running', False):
                 stop_account(acc_id)
                 text_parts.append(f"⏹️ {acc_id} বন্ধ করা হচ্ছে...")
             else:
@@ -455,7 +515,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'groups':
         await query.edit_message_text("👥 *গ্রুপ লিস্ট*\nলোড হচ্ছে...", parse_mode='Markdown')
         try:
-            acc = ACCOUNTS[0]
+            all_accs = get_all_accounts()
+            if not all_accs:
+                await query.edit_message_text("❌ কোনো একাউন্ট নেই!")
+                return
+            acc = all_accs[0]
             client = await get_client(acc['api_id'], acc['api_hash'], acc['session'])
             groups = await get_groups(client)
             await client.disconnect()
@@ -472,10 +536,103 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await query.edit_message_text(f"❌ Error: {str(e)[:100]}")
     
+    # ===== একাউন্ট ম্যানেজমেন্ট =====
+    elif query.data == 'add_account':
+        await query.edit_message_text(
+            "📱 *নতুন একাউন্ট যোগ করুন*\n\n"
+            "নিচের ফরম্যাটে পাঠান:\n\n"
+            "`add_acc API_ID API_HASH SESSION_STRING`\n\n"
+            "উদাহরণ:\n"
+            "`add_acc 123456 abcdefgh123456789 1A2B3C...`\n\n"
+            "অথবা শুধু Session String পাঠালে ডিফল্ট API_ID_1 এবং API_HASH_1 ব্যবহার করবে।",
+            parse_mode='Markdown'
+        )
+        context.user_data['awaiting'] = 'add_account'
+    
+    elif query.data == 'delete_account':
+        all_accs = get_all_accounts()
+        
+        if not all_accs:
+            await query.edit_message_text(
+                "❌ কোনো একাউন্ট নেই!",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]])
+            )
+            return
+        
+        keyboard = []
+        for acc in all_accs:
+            acc_type = "💚" if acc.get('type') == 'env' else "💙"
+            keyboard.append([InlineKeyboardButton(f"{acc_type} {acc['id']}", callback_data=f"del_acc_{acc['id']}")])
+        keyboard.append([InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')])
+        
+        await query.edit_message_text(
+            "🗑 *ডিলিট করার জন্য একাউন্ট নির্বাচন করুন:*\n\n"
+            "💚 = Environment Account\n💙 = Dynamic Account",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    
+    elif query.data.startswith('del_acc_'):
+        acc_id = query.data.replace('del_acc_', '')
+        
+        # প্রথমে বন্ধ করুন
+        if account_stats.get(acc_id, {}).get('running', False):
+            stop_account(acc_id)
+            await asyncio.sleep(1)
+        
+        if remove_account_by_id(acc_id):
+            # স্ট্যাটাস ক্লিনআপ
+            if acc_id in account_stats:
+                del account_stats[acc_id]
+            if acc_id in stop_flags:
+                del stop_flags[acc_id]
+            if acc_id in running_tasks:
+                del running_tasks[acc_id]
+            if acc_id in account_clients:
+                try:
+                    await account_clients[acc_id].disconnect()
+                except:
+                    pass
+                del account_clients[acc_id]
+            
+            save_data()
+            await query.edit_message_text(
+                f"✅ `{acc_id}` ডিলিট করা হয়েছে!",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]])
+            )
+        else:
+            await query.edit_message_text(
+                f"❌ `{acc_id}` ডিলিট করতে ব্যর্থ!",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]])
+            )
+    
+    elif query.data == 'account_list':
+        all_accs = get_all_accounts()
+        if not all_accs:
+            await query.edit_message_text(
+                "❌ কোনো একাউন্ট নেই!",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]])
+            )
+            return
+        
+        text = f"📋 *একাউন্ট লিস্ট ({len(all_accs)})*\n\n"
+        for i, acc in enumerate(all_accs, 1):
+            acc_id = acc['id']
+            acc_type = "🟢 এনভি" if acc.get('type') == 'env' else "🔵 ডায়নামিক"
+            status = '🟢 চলছে' if account_stats.get(acc_id, {}).get('running', False) else '🔴 বন্ধ'
+            sent = account_stats.get(acc_id, {}).get('sent', 0)
+            text += f"{i}. {acc_id} ({acc_type}) - {status} - পাঠিয়েছে: {sent}\n"
+        
+        keyboard = [[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]]
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    
     elif query.data == 'back_main':
-        total = len(ACCOUNTS)
-        running = sum(1 for acc in ACCOUNTS if account_stats[acc['id']]['running'])
-        total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACCOUNTS)
+        all_accs = get_all_accounts()
+        total = len(all_accs)
+        running = sum(1 for acc in all_accs if account_stats.get(acc['id'], {}).get('running', False))
+        total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
         
         keyboard = [
             [InlineKeyboardButton("▶️ সব চালু", callback_data='start_all'),
@@ -483,6 +640,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
             [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
             [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
+            [InlineKeyboardButton("➕ একাউন্ট যোগ", callback_data='add_account')],
+            [InlineKeyboardButton("🗑 একাউন্ট ডিলিট", callback_data='delete_account')],
+            [InlineKeyboardButton("📋 একাউন্ট লিস্ট", callback_data='account_list')],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -498,12 +658,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_status(query):
     """স্ট্যাটাস দেখানো"""
-    total_sent = sum(account_stats[acc['id']]['sent'] for acc in ACCOUNTS)
+    all_accs = get_all_accounts()
+    total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
+    
     text = "📊 *স্ট্যাটাস*\n\n"
-    for acc in ACCOUNTS:
+    for acc in all_accs:
         aid = acc['id']
-        status = '🟢 চলছে' if account_stats[aid]['running'] else '🔴 বন্ধ'
-        text += f"• {aid}: {status} | পাঠিয়েছে: {account_stats[aid]['sent']}\n"
+        status = '🟢 চলছে' if account_stats.get(aid, {}).get('running', False) else '🔴 বন্ধ'
+        text += f"• {aid}: {status} | পাঠিয়েছে: {account_stats.get(aid, {}).get('sent', 0)}\n"
     text += f"\n📝 `{MESSAGE[:40]}`"
     text += f"\n⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s"
     text += f"\n📨 মোট: {total_sent}"
@@ -520,6 +682,75 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = update.message.text.strip()
     awaiting = context.user_data.get('awaiting')
+    
+    # ===== একাউন্ট যোগ করার হ্যান্ডলার =====
+    if awaiting == 'add_account':
+        context.user_data['awaiting'] = None
+        
+        try:
+            # ফরম্যাট: add_acc API_ID API_HASH SESSION_STRING
+            parts = text.split()
+            if parts[0].lower() == 'add_acc' and len(parts) >= 4:
+                api_id = int(parts[1])
+                api_hash = parts[2]
+                session_string = parts[3]
+            elif len(parts) >= 1 and not parts[0].lower().startswith('add_acc'):
+                # শুধু session string, ডিফল্ট API ব্যবহার করবে
+                if not API_ID_1 or not API_HASH_1:
+                    await update.message.reply_text(
+                        "❌ ডিফল্ট API_ID এবং API_HASH সেট করা নেই!\n"
+                        "অনুগ্রহ করে ফরম্যাটে দিন:\n"
+                        "`add_acc API_ID API_HASH SESSION_STRING`",
+                        parse_mode='Markdown'
+                    )
+                    return
+                api_id = API_ID_1
+                api_hash = API_HASH_1
+                session_string = text
+            else:
+                await update.message.reply_text(
+                    "❌ ভুল ফরম্যাট!\n\n"
+                    "সঠিক ফরম্যাট:\n"
+                    "`add_acc API_ID API_HASH SESSION_STRING`\n\n"
+                    "অথবা শুধু Session String",
+                    parse_mode='Markdown'
+                )
+                return
+            
+            # সেশন টেস্ট
+            status_msg = await update.message.reply_text("⏳ সেশন টেস্ট করা হচ্ছে...")
+            
+            success, name_or_error, user_id = await test_session(api_id, api_hash, session_string)
+            
+            if not success:
+                await status_msg.edit_text(f"❌ সেশন ভ্যালিড নয়!\n\nError: {name_or_error}")
+                return
+            
+            # একাউন্ট যোগ
+            success, result = add_dynamic_account(api_id, api_hash, session_string)
+            
+            if success:
+                # স্ট্যাটাস রিফ্রেশ
+                refresh_account_stats()
+                
+                new_id = result
+                await status_msg.edit_text(
+                    f"✅ *একাউন্ট যোগ করা হয়েছে!* 🎉\n\n"
+                    f"🆔 আইডি: `{new_id}`\n"
+                    f"👤 নাম: {name_or_error}\n"
+                    f"🆔 ইউজার আইডি: `{user_id}`\n\n"
+                    f"মোট একাউন্ট: {len(get_all_accounts())}",
+                    parse_mode='Markdown'
+                )
+            else:
+                await status_msg.edit_text(f"❌ যোগ করতে ব্যর্থ!\n\n{result}")
+        
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {str(e)[:200]}")
+        
+        return  # ← গুরুত্বপূর্ণ
+    
+    # ===== সাধারণ টেক্সট হ্যান্ডলার =====
     if not awaiting:
         return
     
@@ -574,20 +805,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     """মেইন ফাংশন"""
     print("=" * 50, flush=True)
-    print(f"🤖 {len(ACCOUNTS)}-ACCOUNT BOT", flush=True)
+    print(f"🤖 BOT READY", flush=True)
     print("=" * 50, flush=True)
     
     load_data()
     print("📂 ডাটা লোড করা হয়েছে", flush=True)
     
-    # ✅ ফিক্স: ওয়েবহুক ক্লিয়ার করা (Conflict দূর করার জন্য)
+    # ডায়নামিক একাউন্ট লোড
+    dynamic = load_dynamic_accounts()
+    if dynamic:
+        print(f"📂 {len(dynamic)} টি ডায়নামিক একাউন্ট লোড করা হয়েছে", flush=True)
+    
+    # ✅ ওয়েবহুক ক্লিয়ার
     try:
         r = httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true")
         print(f"✅ ওয়েবহুক ক্লিয়ার: {r.json().get('description', 'OK')}", flush=True)
     except Exception as e:
         print(f"⚠️ ওয়েবহুক এরর: {e}", flush=True)
     
-    # আরো একবার চেক — সব পেন্ডিং আপডেট ক্লিয়ার
+    # পেন্ডিং আপডেট ক্লিয়ার
     try:
         r = httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates", json={"offset": -1, "timeout": 1})
         updates = r.json().get('result', [])
@@ -608,7 +844,6 @@ async def main():
     await app.initialize()
     await app.start()
     
-    # ⭐ ফিক্স: পোলিং টাইমআউট সহ
     await app.updater.start_polling(
         drop_pending_updates=True,
         timeout=30
