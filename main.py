@@ -59,10 +59,7 @@ CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "30"))
 print(f"📋 BOT_TOKEN: {'✅' if BOT_TOKEN else '❌'}", flush=True)
 print(f"📋 OWNER_ID: {OWNER_ID}", flush=True)
 
-# ==========================================
-# শুধুমাত্র Environment থেকে অটো Load হবে
-# Add Account অপশন সরানো হয়েছে
-# ==========================================
+# Environment Accounts
 ENV_ACCOUNTS = []
 acc_configs = [
     ('acc1', API_ID_1, API_HASH_1, SESSION_1),
@@ -70,7 +67,6 @@ acc_configs = [
     ('acc3', API_ID_3, API_HASH_3, SESSION_3),
 ]
 
-# Environment থেকে কানেক্ট করে নাম সহ সেভ করবো
 async def init_env_accounts():
     """Environment accounts থেকে নাম নিয়ে initialize"""
     for acc_id, api_id, api_hash, session in acc_configs:
@@ -124,6 +120,33 @@ def get_all_accounts():
     """সব একাউন্ট (এনভায়রনমেন্ট + ডায়নামিক)"""
     dynamic = load_dynamic_accounts()
     return ENV_ACCOUNTS + dynamic
+
+def add_dynamic_account(name, session_string, api_id=0, api_hash=""):
+    """শুধু Session String দিয়ে একাউন্ট যোগ"""
+    accounts = load_dynamic_accounts()
+    
+    # ডুপ্লিকেট চেক
+    for acc in accounts:
+        if acc['session'] == session_string:
+            return False, "এই session ইতিমধ্যে আছে!"
+    
+    new_id = f"acc_dynamic_{len(accounts) + 1}"
+    
+    # Session থেকে API_ID এবং API_HASH auto detect করার চেষ্টা
+    # না পারলে Environment থেকে নিবে
+    detected_api_id = api_id if api_id else API_ID_1
+    detected_api_hash = api_hash if api_hash else API_HASH_1
+    
+    accounts.append({
+        'id': new_id,
+        'name': name,
+        'api_id': detected_api_id,
+        'api_hash': detected_api_hash,
+        'session': session_string,
+        'type': 'dynamic'
+    })
+    save_dynamic_accounts(accounts)
+    return True, new_id
 
 def remove_account_by_id(account_id):
     """যেকোনো একাউন্ট ডিলিট (এনভি + ডায়নামিক)"""
@@ -362,6 +385,21 @@ def stop_all_accounts():
         stop_account(acc['id'])
 
 
+async def test_session_only(session_string):
+    """শুধু Session String দিয়ে টেস্ট - API_ID_1, API_HASH_1 ব্যবহার করবে"""
+    try:
+        if not API_ID_1 or not API_HASH_1:
+            return False, "API_ID_1 বা API_HASH_1 সেট করা নেই!", None
+        
+        client = TelegramClient(StringSession(session_string), API_ID_1, API_HASH_1, receive_updates=False)
+        await client.start()
+        me = await client.get_me()
+        await client.disconnect()
+        return True, me.first_name, me.id
+    except Exception as e:
+        return False, str(e), None
+
+
 # ====================
 # টেলিগ্রাম বট হ্যান্ডলার
 # ====================
@@ -386,6 +424,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
         [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
         [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
+        [InlineKeyboardButton("➕ একাউন্ট যোগ", callback_data='add_account')],
         [InlineKeyboardButton("🗑 একাউন্ট ডিলিট", callback_data='delete_account')],
         [InlineKeyboardButton("📋 একাউন্ট লিস্ট", callback_data='account_list')],
     ]
@@ -516,7 +555,20 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await query.edit_message_text(f"❌ Error: {str(e)[:100]}")
     
-    # ===== DELETE ACCOUNT (নাম সহ দেখাবে) =====
+    # ===== ADD ACCOUNT (শুধু Session String) =====
+    elif query.data == 'add_account':
+        await query.edit_message_text(
+            "📱 *নতুন একাউন্ট যোগ করুন*\n\n"
+            "শুধু **Session String** টা পাঠান।\n\n"
+            "Session String বের করার কমান্ড:\n"
+            "```\npip install telethon && python -c \"from telethon.sync import TelegramClient; from telethon.sessions import StringSession; c = TelegramClient(StringSession(), API_ID, 'API_HASH'); c.start(); print(c.session.save())\"\n```\n\n"
+            "⚠️ API_ID_1 এবং API_HASH_1 ইউজ হবে ডিফল্ট হিসেবে।\n\n"
+            "শুধু Session String টা লিখে পাঠান:",
+            parse_mode='Markdown'
+        )
+        context.user_data['awaiting'] = 'add_account'
+    
+    # ===== DELETE ACCOUNT (নাম সহ) =====
     elif query.data == 'delete_account':
         all_accs = get_all_accounts()
         
@@ -539,8 +591,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.edit_message_text(
             "🗑 *ডিলিট করার জন্য একাউন্ট নির্বাচন করুন:*\n\n"
-            "💚 = Environment Account\n💙 = Dynamic Account\n\n"
-            "⚠️ Environment account delete করলে শুধু এই session থেকে মুছে যাবে, env variable থাকলে পরের restart এ আবার আসবে।",
+            "💚 = Environment Account\n💙 = Dynamic Account",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -621,6 +672,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
             [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
             [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
+            [InlineKeyboardButton("➕ একাউন্ট যোগ", callback_data='add_account')],
             [InlineKeyboardButton("🗑 একাউন্ট ডিলিট", callback_data='delete_account')],
             [InlineKeyboardButton("📋 একাউন্ট লিস্ট", callback_data='account_list')],
         ]
@@ -664,6 +716,47 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     awaiting = context.user_data.get('awaiting')
     
+    # ===== একাউন্ট যোগ করার হ্যান্ডলার (শুধু Session String) =====
+    if awaiting == 'add_account':
+        context.user_data['awaiting'] = None
+        
+        try:
+            session_string = text
+            
+            # সেশন টেস্ট
+            status_msg = await update.message.reply_text("⏳ Session টেস্ট করা হচ্ছে...")
+            
+            success, name, user_id = await test_session_only(session_string)
+            
+            if not success:
+                await status_msg.edit_text(f"❌ Session ভ্যালিড নয়!\n\nError: {name}")
+                return
+            
+            # একাউন্ট যোগ
+            success, result = add_dynamic_account(name, session_string)
+            
+            if success:
+                # স্ট্যাটাস রিফ্রেশ
+                refresh_account_stats()
+                
+                new_id = result
+                await status_msg.edit_text(
+                    f"✅ *একাউন্ট যোগ করা হয়েছে!* 🎉\n\n"
+                    f"👤 নাম: {name}\n"
+                    f"🆔 আইডি: `{new_id}`\n"
+                    f"🆔 ইউজার আইডি: `{user_id}`\n\n"
+                    f"মোট একাউন্ট: {len(get_all_accounts())}",
+                    parse_mode='Markdown'
+                )
+            else:
+                await status_msg.edit_text(f"❌ যোগ করতে ব্যর্থ!\n\n{result}")
+        
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {str(e)[:200]}")
+        
+        return
+    
+    # ===== সাধারণ টেক্সট হ্যান্ডলার =====
     if not awaiting:
         return
     
