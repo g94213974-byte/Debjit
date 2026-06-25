@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-📱 ADVANCED TELEGRAM MASS MESSAGING BOT v2.0
-✅ Phone + OTP + 2FA Login (API_ID/HASH auto-use from env)
+📱 ADVANCED TELEGRAM MASS MESSAGING BOT v2.1
+✅ Phone + OTP + 2FA Login (FIXED button click)
+✅ Multiple Messages (একাধিক মেসেজ থেকে random pick)
 ✅ Infinite unique messages (প্রতি মেসেজে আলাদা random emoji)
 ✅ Auto-skip banned/restricted channels + backup fallback
 ✅ Auto-logout + notification on account restriction
-✅ "Back" button after successful login
 """
 
 import sys
@@ -17,7 +17,6 @@ import json
 import threading
 import httpx
 import re
-import string
 from datetime import datetime
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
@@ -37,9 +36,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from flask import Flask
 
-# ═══════════════════════════════════════════
-# Logging
-# ═══════════════════════════════════════════
+# ══════════ LOGGING ══════════
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -49,16 +46,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 60, flush=True)
-print("🤖 ADVANCED MESSAGING BOT v2.0", flush=True)
+print("🤖 MESSAGING BOT v2.1", flush=True)
 print("=" * 60, flush=True)
 
-# ═══════════════════════════════════════════
-# Environment Variables
-# ═══════════════════════════════════════════
+# ══════════ ENVIRONMENT ══════════
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 
-# API_ID/API_HASH — এগুলোই সবসময় ব্যবহার হবে
 API_ID_1 = int(os.environ.get("API_ID_1", "0"))
 API_HASH_1 = os.environ.get("API_HASH_1", "")
 SESSION_1 = os.environ.get("SESSION_1", "")
@@ -71,21 +65,51 @@ API_ID_3 = int(os.environ.get("API_ID_3", "0"))
 API_HASH_3 = os.environ.get("API_HASH_3", "")
 SESSION_3 = os.environ.get("SESSION_3", "")
 
-# ═══════════════════════════════════════════
-# Config
-# ═══════════════════════════════════════════
+# ══════════ CONFIG ══════════
 DYNAMIC_ACCOUNTS_FILE = "dynamic_accounts.json"
 BACKUP_CHANNELS_FILE = "backup_channels.json"
 AUTH_SESSIONS_FILE = "auth_sessions.json"
+MESSAGES_FILE = "messages.json"
 
+# Single message (backward compatible)
 MESSAGE = os.environ.get("MESSAGE", "𝟭𝟬 𝗠𝗜𝗡 𝗩𝗖 ₹𝟰𝟱 𝗕𝗔𝗕𝗬😘")
 MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "6"))
 MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "10"))
 CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "45"))
 
-# ═══════════════════════════════════════════
-# Emoji Pool — থেকে প্রতি মেসেজে ১টা random emoji যোগ হবে
-# ═══════════════════════════════════════════
+# ══════════ MESSAGES POOL ══════════
+def load_messages():
+    """একাধিক মেসেজ লোড করে। প্রতিবার random pick হবে।"""
+    if os.path.exists(MESSAGES_FILE):
+        try:
+            with open(MESSAGES_FILE, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    # Default messages
+    default_msgs = [
+        MESSAGE,
+        f"{MESSAGE} ✅",
+        f"{MESSAGE} 💫",
+        f"{MESSAGE} 🔥",
+    ]
+    save_messages(default_msgs)
+    return default_msgs
+
+def save_messages(msgs):
+    try:
+        with open(MESSAGES_FILE, 'w') as f:
+            json.dump(msgs, f, indent=2)
+    except:
+        pass
+
+def get_random_message():
+    """মেসেজ পুল থেকে random একটি মেসেজ নিয়ে তাতে emoji যোগ করে"""
+    msgs = load_messages()
+    base_msg = random.choice(msgs) if msgs else MESSAGE
+    return base_msg
+
+# ══════════ EMOJI POOL ══════════
 EMOJI_POOL = [
     "❤️","🔥","🥰","💋","😘","💕","🌹","💖","😍","✨",
     "💞","⭐","🌸","💗","🌺","💝","💫","🌟","💓","🎀",
@@ -99,7 +123,7 @@ EMOJI_POOL = [
     "😎","🤩","🥳","😈","👻","🎃","💀","☠️","👽","🤖",
 ]
 
-# Backup channels file
+# ══════════ FILE HELPERS ══════════
 def load_backup_channels():
     if os.path.exists(BACKUP_CHANNELS_FILE):
         try:
@@ -116,7 +140,6 @@ def save_backup_channels(channels):
     except:
         pass
 
-# Auth sessions file
 def load_auth_sessions():
     if os.path.exists(AUTH_SESSIONS_FILE):
         try:
@@ -133,9 +156,7 @@ def save_auth_sessions(sessions):
     except:
         pass
 
-# ═══════════════════════════════════════════
-# Environment Accounts
-# ═══════════════════════════════════════════
+# ══════════ ENV ACCOUNTS ══════════
 ENV_ACCOUNTS = []
 acc_configs = [
     ('acc1', API_ID_1, API_HASH_1, SESSION_1),
@@ -163,9 +184,7 @@ async def init_env_accounts():
                 print(f"❌ {acc_id}: {str(e)[:50]}", flush=True)
             await asyncio.sleep(1)
 
-# ═══════════════════════════════════════════
-# Dynamic Account Management
-# ═══════════════════════════════════════════
+# ══════════ DYNAMIC ACCOUNTS ══════════
 def load_dynamic_accounts():
     if os.path.exists(DYNAMIC_ACCOUNTS_FILE):
         try:
@@ -237,9 +256,7 @@ def refresh_account_stats():
             account_stats[acc['id']] = {'sent': 0, 'running': False, 'failed_channels': []}
             stop_flags[acc['id']] = False
 
-# ═══════════════════════════════════════════
-# Globals
-# ═══════════════════════════════════════════
+# ══════════ GLOBALS ══════════
 running_tasks = {}
 stop_flags = {}
 account_clients = {}
@@ -248,38 +265,33 @@ banned_channels_cache = {}
 phone_login_states = {}
 data_file = "bot_data.json"
 
-# ═══════════════════════════════════════════
-# Generate Unique Message — প্রতি মেসেজে আলাদা
-# ═══════════════════════════════════════════
+# ══════════ GENERATE UNIQUE MESSAGE ══════════
 def generate_unique_message():
     """
-    মূল মেসেজ + random emoji যোগ করে unique message তৈরি করে।
-    এতে Telegram detect করতে পারে না যে একই মেসেজ বারবার যাচ্ছে,
-    ফলে account safe থাকে।
+    messages.json থেকে random একটি মেসেজ নেয়
+    তার সাথে 1-3 টি random emoji যোগ করে UNIQUE বানায়
     """
-    global MESSAGE, EMOJI_POOL
+    global MESSAGE
     
-    # 1-3 টা random emoji নিবে
+    # প্রথমে messages pool থেকে random message নিবে
+    base_msg = get_random_message()
+    
+    # 1-3 টা random emoji
     num_emojis = random.randint(1, 3)
-    selected_emojis = random.sample(EMOJI_POOL, num_emojis)
+    selected_emojis = random.sample(EMOJI_POOL, min(num_emojis, len(EMOJI_POOL)))
     emoji_suffix = " " + " ".join(selected_emojis)
     
-    # কখনো কখনো মেসেজের শুরুতে or মাঝে emoji যোগ করে
+    # র্যান্ডম পজিশনে emoji যোগ
     placement = random.randint(0, 2)
     if placement == 0:
-        # শেষে emoji
-        return MESSAGE + emoji_suffix
+        return base_msg + emoji_suffix
     elif placement == 1:
-        # শুরুতে emoji
-        return emoji_suffix + " " + MESSAGE
+        return emoji_suffix + " " + base_msg
     else:
-        # মাঝখানে
-        mid = len(MESSAGE) // 2
-        return MESSAGE[:mid] + emoji_suffix + " " + MESSAGE[mid:]
+        mid = len(base_msg) // 2
+        return base_msg[:mid] + emoji_suffix + " " + base_msg[mid:]
 
-# ═══════════════════════════════════════════
-# Flask Web Server
-# ═══════════════════════════════════════════
+# ══════════ FLASK ══════════
 web_app = Flask(__name__)
 
 @web_app.route("/")
@@ -287,7 +299,8 @@ def home():
     all_accs = get_all_accounts()
     running_count = sum(1 for acc in all_accs if account_stats.get(acc['id'], {}).get('running', False))
     total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
-    return f"✅ Bot v2.0 | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Sent: {total_sent}"
+    msg_count = len(load_messages())
+    return f"✅ Bot v2.1 | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Sent: {total_sent} | Messages: {msg_count}"
 
 @web_app.route("/health")
 def health():
@@ -297,9 +310,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     web_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 
-# ═══════════════════════════════════════════
-# Data Persistence
-# ═══════════════════════════════════════════
+# ══════════ DATA PERSISTENCE ══════════
 def load_data():
     global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT, account_stats
     if os.path.exists(data_file):
@@ -331,9 +342,7 @@ def save_data():
     except:
         pass
 
-# ═══════════════════════════════════════════
-# Telegram Helpers
-# ═══════════════════════════════════════════
+# ══════════ TELEGRAM HELPERS ══════════
 async def get_client(api_id, api_hash, session_string):
     client = TelegramClient(
         StringSession(session_string),
@@ -345,7 +354,6 @@ async def get_client(api_id, api_hash, session_string):
     return client
 
 async def get_groups(client, retry=3):
-    """সব গ্রুপ/চ্যানেল লিস্ট — retry logic সহ"""
     for attempt in range(retry):
         try:
             dialogs = await client(GetDialogsRequest(
@@ -372,7 +380,6 @@ async def get_groups(client, retry=3):
     return []
 
 async def is_account_restricted(client):
-    """Check if account is globally restricted/banned"""
     try:
         me = await client.get_me()
         if me is None:
@@ -384,11 +391,9 @@ async def is_account_restricted(client):
         return False, None
 
 async def can_send_to_channel(client, channel_entity, acc_id):
-    """Pre-check if account can send to this channel"""
     try:
         me = await client.get_me()
         permissions = await client.get_permissions(channel_entity, me.id)
-        
         if permissions.is_banned:
             banned_channels_cache.setdefault(acc_id, set()).add(channel_entity.id)
             return False, "BANNED"
@@ -403,11 +408,10 @@ async def can_send_to_channel(client, channel_entity, acc_id):
         err_str = str(e).lower()
         if any(x in err_str for x in ['ban', 'restrict', 'forbidden', 'permission', "can't write", 'admin']):
             banned_channels_cache.setdefault(acc_id, set()).add(channel_entity.id)
-            return False, f"BLOCKED"
+            return False, "BLOCKED"
         return True, None
 
 async def try_backup_channels(client, acc):
-    """Try to send to backup channels when banned from main ones"""
     backup_channels = load_backup_channels()
     if not backup_channels:
         return 0
@@ -433,7 +437,6 @@ async def try_backup_channels(client, acc):
     return success_count
 
 async def notify_owner_restricted(acc_name, reason, acc):
-    """Notify owner when account is restricted"""
     try:
         bot_app = Application.builder().token(BOT_TOKEN).build()
         await bot_app.bot.send_message(
@@ -443,19 +446,14 @@ async def notify_owner_restricted(acc_name, reason, acc):
                  f"📌 ID: `{acc['id']}`\n"
                  f"❌ Reason: {reason}\n"
                  f"🕐 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-                 f"Account has been auto-logged out and removed from active list.",
+                 f"Account has been auto-logged out.",
             parse_mode='Markdown'
         )
     except:
         pass
 
-# ═══════════════════════════════════════════
-# Main Messaging Loop — FIXED VERSION
-# ═══════════════════════════════════════════
+# ══════════ MAIN MESSAGING LOOP ══════════
 async def run_account_messaging(acc):
-    """
-    একাউন্ট দিয়ে মেসেজ পাঠানো — প্রতি মেসেজে UNIQUE content
-    """
     acc_id = acc['id']
     acc_name = acc.get('name', acc_id)
     stop_flags[acc_id] = False
@@ -472,7 +470,6 @@ async def run_account_messaging(acc):
         me = await client.get_me()
         logger.info(f"✅ [{acc_name}] Logged in: {me.first_name}")
         
-        # Check account restriction
         is_restricted, reason = await is_account_restricted(client)
         if is_restricted:
             logger.error(f"❌ [{acc_name}] Account restricted: {reason}")
@@ -480,7 +477,6 @@ async def run_account_messaging(acc):
             stop_account(acc_id)
             return
         
-        # Get groups
         groups = await get_groups(client)
         if not groups:
             logger.warning(f"[{acc_name}] No groups/channels found!")
@@ -496,11 +492,9 @@ async def run_account_messaging(acc):
                 if stop_flags.get(acc_id, False):
                     break
                 
-                # Skip known banned
                 if group.id in banned_channels_cache.get(acc_id, set()):
                     continue
                 
-                # Pre-check
                 can_send, fail_reason = await can_send_to_channel(client, group, acc_id)
                 if not can_send:
                     failed_this_cycle.add(group.id)
@@ -526,27 +520,16 @@ async def run_account_messaging(acc):
                     if wait_time > 60:
                         await asyncio.sleep(wait_time - 60)
                         
-                except errors.ChatWriteForbiddenError:
+                except (errors.ChatWriteForbiddenError, errors.UserBannedInChannelError, errors.ChatAdminRequiredError) as e:
                     banned_channels_cache.setdefault(acc_id, set()).add(group.id)
                     failed_this_cycle.add(group.id)
-                    logger.warning(f"[{acc_name}] ⛔ {group.title}: Write forbidden")
-                    
-                except errors.UserBannedInChannelError:
-                    banned_channels_cache.setdefault(acc_id, set()).add(group.id)
-                    failed_this_cycle.add(group.id)
-                    logger.warning(f"[{acc_name}] ⛔ {group.title}: Banned")
-                    
-                except errors.ChatAdminRequiredError:
-                    banned_channels_cache.setdefault(acc_id, set()).add(group.id)
-                    failed_this_cycle.add(group.id)
-                    logger.warning(f"[{acc_name}] ⛔ {group.title}: Admin required")
+                    logger.warning(f"[{acc_name}] ⛔ {group.title}: {type(e).__name__}")
                     
                 except errors.RPCError as e:
                     err_str = str(e).lower()
                     if any(x in err_str for x in ['ban', 'restrict', 'permission', 'forbidden']):
                         banned_channels_cache.setdefault(acc_id, set()).add(group.id)
                         failed_this_cycle.add(group.id)
-                        logger.warning(f"[{acc_name}] ⛔ {group.title}: {str(e)[:60]}")
                     else:
                         logger.warning(f"[{acc_name}] ⚠️ {group.title}: {str(e)[:80]}")
                         
@@ -555,27 +538,23 @@ async def run_account_messaging(acc):
                     if any(x in err for x in ['admin', "can't write", 'permission', 'forbidden', 'ban']):
                         banned_channels_cache.setdefault(acc_id, set()).add(group.id)
                         failed_this_cycle.add(group.id)
-                        logger.warning(f"[{acc_name}] ⛔ Skip {group.title}: No permission")
                     else:
                         logger.warning(f"[{acc_name}] ⚠️ Error: {err[:80]}")
                 
                 await asyncio.sleep(random.randint(MIN_INTERVAL, MAX_INTERVAL))
             
-            # Re-check account restriction
             is_restricted, reason = await is_account_restricted(client)
             if is_restricted:
-                logger.error(f"❌ [{acc_name}] Restricted during cycle! {reason}")
+                logger.error(f"❌ [{acc_name}] Restricted: {reason}")
                 await notify_owner_restricted(acc_name, reason, acc)
                 stop_account(acc_id)
                 return
             
-            # Try backup channels if some failed
             if failed_this_cycle:
                 backup_count = await try_backup_channels(client, acc)
                 if backup_count > 0:
                     logger.info(f"[{acc_name}] Backup messaged: {backup_count}")
             
-            # Record failed
             if failed_this_cycle:
                 account_stats[acc_id]['failed_channels'] = list(
                     set(account_stats[acc_id].get('failed_channels', [])) | failed_this_cycle
@@ -593,7 +572,6 @@ async def run_account_messaging(acc):
                     break
                 await asyncio.sleep(1)
             
-            # Reconnect every 15 cycles
             if cycle_count % 15 == 0 and not stop_flags.get(acc_id, False):
                 logger.info(f"[{acc_name}] Reconnecting...")
                 try:
@@ -637,7 +615,6 @@ def stop_all_accounts():
         stop_account(acc['id'])
 
 async def test_session_only(session_string):
-    """Test session — ALWAYS uses API_ID_1, API_HASH_1 from env"""
     try:
         if not API_ID_1 or not API_HASH_1:
             return False, "API_ID_1 বা API_HASH_1 সেট নেই!", None
@@ -650,11 +627,10 @@ async def test_session_only(session_string):
         return False, str(e), None
 
 # ═══════════════════════════════════════════
-# Bot Handlers
+# BOT HANDLERS
 # ═══════════════════════════════════════════
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command"""
     user_id = update.effective_user.id
     if user_id != OWNER_ID:
         await update.message.reply_text("❌ অনুমতি নেই!")
@@ -665,12 +641,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     running = sum(1 for acc in all_accs if account_stats.get(acc['id'], {}).get('running', False))
     total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
     backup_count = len(load_backup_channels())
+    msg_count = len(load_messages())
     
     keyboard = [
         [InlineKeyboardButton("▶️ সব চালু", callback_data='start_all'),
          InlineKeyboardButton("⏹️ সব বন্ধ", callback_data='stop_all')],
         [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
         [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
+        [InlineKeyboardButton("📝 মেসেজ লিস্ট", callback_data='message_list')],
         [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
         [InlineKeyboardButton("➕ Session যোগ", callback_data='add_account')],
         [InlineKeyboardButton("📱 Phone Login", callback_data='phone_login')],
@@ -681,19 +659,19 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     text = (
-        f"🤖 *অ্যাডভান্সড ব্যাচ মেসেজিং বট v2.0*\n\n"
-        f"🔥 *প্রতি মেসেজে UNIQUE Emoji* — Account Safe 🛡️\n\n"
+        f"🤖 *অ্যাডভান্সড ব্যাচ মেসেজিং বট v2.1*\n\n"
+        f"🔥 *{msg_count} টি মেসেজ* থেকে random pick + random emoji\n\n"
         f"📊 একাউন্ট: {total} (চলছে: {running})\n"
-        f"📝 `{MESSAGE[:30]}...`\n"
-        f"⚡ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s\n"
+        f"⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s\n"
         f"📨 মোট পাঠিয়েছে: {total_sent}\n"
         f"🔄 Backup Channels: {backup_count}"
     )
     
     await update.message.reply_text(text, parse_mode='Markdown', reply_markup=reply_markup)
 
+
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Button click handler"""
+    """Button click handler — FIXED version with ALL_TYPES"""
     query = update.callback_query
     await query.answer()
     
@@ -702,7 +680,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT
     
-    # ── Start All ──
+    print(f"🔘 Button clicked: {query.data}", flush=True)
+    
+    # ── START ALL ──
     if query.data == 'start_all':
         text_parts = []
         for acc in get_all_accounts():
@@ -716,12 +696,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 task = asyncio.create_task(run_account_messaging(acc))
                 running_tasks[acc_id] = task
                 text_parts.append(f"▶️ {acc.get('name', acc_id)} started")
-        
         await query.edit_message_text("\n".join(text_parts) if text_parts else "❌ Nothing to start")
         await asyncio.sleep(2)
         await show_status(query)
     
-    # ── Stop All ──
+    # ── STOP ALL ──
     elif query.data == 'stop_all':
         text_parts = []
         for acc in get_all_accounts():
@@ -731,39 +710,97 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text_parts.append(f"⏹️ {acc.get('name', acc_id)} stopping...")
             else:
                 text_parts.append(f"❌ {acc.get('name', acc_id)} already stopped")
-        
         await query.edit_message_text("\n".join(text_parts))
         await asyncio.sleep(2)
         await show_status(query)
     
-    # ── Status ──
+    # ── STATUS ──
     elif query.data == 'status':
         await show_status(query)
     
-    # ── Settings ──
+    # ── SETTINGS ──
     elif query.data == 'settings':
         keyboard = [
-            [InlineKeyboardButton("✏️ মেসেজ পরিবর্তন", callback_data='edit_msg')],
+            [InlineKeyboardButton("📝 মেসেজ লিস্ট ম্যানেজ", callback_data='message_list')],
             [InlineKeyboardButton("⏱️ স্পিড সেটিংস", callback_data='edit_speed')],
             [InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
+        msg_count = len(load_messages())
         text = (
             f"⚙️ *সেটিংস*\n\n"
-            f"📝 `{MESSAGE[:30]}...`\n"
+            f"📝 মেসেজ পুলে: {msg_count} টি মেসেজ\n"
             f"⏱️ মিন: {MIN_INTERVAL}s | ম্যাক্স: {MAX_INTERVAL}s\n"
             f"🔄 সাইকেল: {CYCLE_WAIT}s\n\n"
-            f"🔥 প্রতি মেসেজে random emoji auto-add হবে"
+            f"🔥 প্রতিবারই {msg_count} টি মেসেজ থেকে random pick + random emoji"
         )
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
     
-    elif query.data == 'edit_msg':
-        context.user_data['awaiting'] = 'message'
+    # ── MESSAGE LIST ──
+    elif query.data == 'message_list':
+        msgs = load_messages()
+        text = f"📝 *মেসেজ লিস্ট ({len(msgs)} টি)*\n\n"
+        for i, msg in enumerate(msgs, 1):
+            short = msg[:30] + "..." if len(msg) > 30 else msg
+            text += f"{i}. `{short}`\n"
+        text += "\nপ্রতি মেসেজে auto random emoji যোগ হবে।"
+        
+        keyboard = [
+            [InlineKeyboardButton("➕ নতুন মেসেজ যোগ", callback_data='add_message')],
+            [InlineKeyboardButton("🗑 মেসেজ ডিলিট", callback_data='delete_message_menu')],
+            [InlineKeyboardButton("🔄 সব মেসেজ রিসেট", callback_data='reset_messages')],
+            [InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')],
+        ]
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    # ── ADD MESSAGE ──
+    elif query.data == 'add_message':
+        context.user_data['awaiting'] = 'add_message'
         await query.edit_message_text(
-            f"✏️ *নতুন মেসেজ লিখুন*\n\nবর্তমান: `{MESSAGE}`\n\nশুধু মেসেজ টা লিখুন (প্রতি মেসেজে auto emoji যোগ হবে):",
+            f"✏️ *নতুন মেসেজ যোগ করুন*\n\n"
+            f"বর্তমানে {len(load_messages())} টি মেসেজ আছে।\n\n"
+            f"আপনার নতুন মেসেজ টি লিখুন।\n\n"
+            f"⚠️ এটি *যোগ* হবে, আগের মেসেজ থাকবে।\n\n"
+            f"এখন লিখুন:",
             parse_mode='Markdown'
         )
     
+    # ── DELETE MESSAGE ──
+    elif query.data == 'delete_message_menu':
+        msgs = load_messages()
+        if not msgs:
+            await query.edit_message_text("❌ কোনো মেসেজ নেই!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]]))
+            return
+        keyboard = []
+        for i, msg in enumerate(msgs):
+            short = msg[:20] + "..." if len(msg) > 20 else msg
+            keyboard.append([InlineKeyboardButton(f"{i+1}. {short}", callback_data=f"del_msg_{i}")])
+        keyboard.append([InlineKeyboardButton("🔙 ফিরে", callback_data='message_list')])
+        await query.edit_message_text("🗑 *ডিলিট করার জন্য মেসেজ নির্বাচন:*", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    elif query.data.startswith('del_msg_'):
+        idx = int(query.data.replace('del_msg_', ''))
+        msgs = load_messages()
+        if 0 <= idx < len(msgs):
+            removed = msgs.pop(idx)
+            save_messages(msgs)
+            await query.edit_message_text(f"✅ মেসেজ ডিলিট!\n\nবাকি: {len(msgs)} টি মেসেজ", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='message_list')]]))
+        else:
+            await query.edit_message_text("❌ ভুল ইনডেক্স!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='message_list')]]))
+    
+    # ── RESET MESSAGES ──
+    elif query.data == 'reset_messages':
+        default_msgs = [
+            MESSAGE,
+            f"{MESSAGE} ✅",
+            f"{MESSAGE} 💫",
+            f"{MESSAGE} 🔥",
+        ]
+        save_messages(default_msgs)
+        await query.edit_message_text(f"🔄 রিসেট! {len(default_msgs)} টি ডিফল্ট মেসেজ সেট।", 
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='message_list')]]))
+    
+    # ── SPEED ──
     elif query.data == 'edit_speed':
         keyboard = [
             [InlineKeyboardButton(f"📉 মিন: {MIN_INTERVAL}s", callback_data='set_min')],
@@ -786,7 +823,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting'] = 'cycle'
         await query.edit_message_text(f"সাইকেল ওয়েট (সেকেন্ড) দিন:\nবর্তমান: {CYCLE_WAIT}s\nযেমন: 45")
     
-    # ── Groups List ──
+    # ── GROUPS ──
     elif query.data == 'groups':
         await query.edit_message_text("👥 *গ্রুপ লিস্ট*\nলোড হচ্ছে...", parse_mode='Markdown')
         try:
@@ -803,26 +840,25 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             regular_groups = [g for g in groups if not (hasattr(g, 'broadcast') and g.broadcast)]
             
             text = f"👥 *গ্রুপ ({len(regular_groups)}) + চ্যানেল ({len(channels)})*\n\n"
-            
             if regular_groups:
                 text += "📌 *গ্রুপ:*\n"
                 for i, g in enumerate(regular_groups[:30], 1):
                     text += f"{i}. {g.title}\n"
                 if len(regular_groups) > 30:
-                    text += f"\n...আরও {len(regular_groups)-30} টি"
+                    text += f"...আরও {len(regular_groups)-30} টি\n"
             if channels:
                 text += "\n📢 *চ্যানেল:*\n"
                 for i, g in enumerate(channels[:20], 1):
                     text += f"{i}. {g.title}\n"
                 if len(channels) > 20:
-                    text += f"\n...আরও {len(channels)-20} টি"
+                    text += f"...আরও {len(channels)-20} টি"
             
             keyboard = [[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]]
             await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
         except Exception as e:
             await query.edit_message_text(f"❌ Error: {str(e)[:100]}")
     
-    # ── Backup Channels ──
+    # ── BACKUP CHANNELS ──
     elif query.data == 'backup_channels_menu':
         backup_channels = load_backup_channels()
         text = "📂 *ব্যাকআপ চ্যানেল*\n\n"
@@ -844,10 +880,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting'] = 'add_backup'
         await query.edit_message_text(
             "📂 *ব্যাকআপ চ্যানেল যোগ করুন*\n\n"
-            "ফরম্যাট: `নাম | চ্যানেল_লিংক`\n\n"
+            "ফরম্যাট: `নাম | লিংক`\n\n"
             "যেমন:\n"
             "`My Backup | https://t.me/mychannel`\n"
-            "`Backup 2 | @mybackupchannel`\n\n"
             "এখন পাঠান:",
             parse_mode='Markdown'
         )
@@ -872,32 +907,32 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if 0 <= idx < len(backup_channels):
             removed = backup_channels.pop(idx)
             save_backup_channels(backup_channels)
-            await query.edit_message_text(f"✅ `{removed.get('name', '?')}` deleted!", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='backup_channels_menu')]]))
+            await query.edit_message_text(f"✅ `{removed.get('name', '?')}` deleted!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='backup_channels_menu')]]))
     
-    # ── Phone Login ──
+    # ── PHONE LOGIN (FIXED) ──
     elif query.data == 'phone_login':
         context.user_data['awaiting'] = 'phone_number'
         await query.edit_message_text(
             "📱 *ফোন লগইন*\n\n"
             "আপনার ফোন নম্বর দিন (ইন্টারন্যাশনাল ফরম্যাটে):\n\n"
             "যেমন: `+8801XXXXXXXXX`\n\n"
-            "⚠️ *API_ID_1 ও API_HASH_1* env থেকে auto ব্যবহার হবে। আলাদা API_ID দিতে হবে না।\n\n"
+            "⚠️ *API_ID_1 ও API_HASH_1* env থেকে auto ব্যবহার হবে।\n\n"
             "শুধু ফোন নম্বর লিখুন:",
             parse_mode='Markdown'
         )
     
-    # ── Add Session ──
+    # ── ADD SESSION ──
     elif query.data == 'add_account':
         await query.edit_message_text(
             "📱 *Session String যোগ করুন*\n\n"
             "শুধু **Session String** টা পাঠান।\n\n"
-            "⚠️ *API_ID_1 ও API_HASH_1* env থেকে auto ব্যবহার হবে।\n\n"
+            "⚠️ API_ID_1 ও API_HASH_1 env থেকে auto ব্যবহার হবে।\n\n"
             "শুধু Session String লিখে পাঠান:",
             parse_mode='Markdown'
         )
         context.user_data['awaiting'] = 'add_account'
     
-    # ── Delete Account ──
+    # ── DELETE ACCOUNT ──
     elif query.data == 'delete_account':
         all_accs = get_all_accounts()
         if not all_accs:
@@ -932,13 +967,16 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             await d[acc_id].disconnect()
                     except:
                         pass
-                    del d[acc_id]
+                    try:
+                        del d[acc_id]
+                    except:
+                        pass
             save_data()
             await query.edit_message_text(f"✅ *{acc_name}* deleted!", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]]))
         else:
-            await query.edit_message_text(f"❌ Failed to delete!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]]))
+            await query.edit_message_text(f"❌ Failed!", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]]))
     
-    # ── Account List ──
+    # ── ACCOUNT LIST ──
     elif query.data == 'account_list':
         all_accs = get_all_accounts()
         if not all_accs:
@@ -956,19 +994,21 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]]
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
     
-    # ── Back to Main ──
+    # ── BACK MAIN ──
     elif query.data == 'back_main':
         all_accs = get_all_accounts()
         total = len(all_accs)
         running = sum(1 for acc in all_accs if account_stats.get(acc['id'], {}).get('running', False))
         total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
         backup_count = len(load_backup_channels())
+        msg_count = len(load_messages())
         
         keyboard = [
             [InlineKeyboardButton("▶️ সব চালু", callback_data='start_all'),
              InlineKeyboardButton("⏹️ সব বন্ধ", callback_data='stop_all')],
             [InlineKeyboardButton("📊 স্ট্যাটাস", callback_data='status')],
             [InlineKeyboardButton("⚙️ সেটিংস", callback_data='settings')],
+            [InlineKeyboardButton("📝 মেসেজ লিস্ট", callback_data='message_list')],
             [InlineKeyboardButton("👥 গ্রুপ লিস্ট", callback_data='groups')],
             [InlineKeyboardButton("➕ Session যোগ", callback_data='add_account')],
             [InlineKeyboardButton("📱 Phone Login", callback_data='phone_login')],
@@ -979,20 +1019,20 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         text = (
-            f"🤖 *অ্যাডভান্সড ব্যাচ মেসেজিং বট v2.0*\n\n"
-            f"🔥 *প্রতি মেসেজে UNIQUE Emoji* — Account Safe 🛡️\n\n"
+            f"🤖 *অ্যাডভান্সড ব্যাচ মেসেজিং বট v2.1*\n\n"
+            f"🔥 *{msg_count} টি মেসেজ* থেকে random pick + random emoji\n\n"
             f"📊 একাউন্ট: {total} (চলছে: {running})\n"
-            f"📝 `{MESSAGE[:30]}...`\n"
-            f"⚡ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s\n"
+            f"⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s\n"
             f"📨 মোট পাঠিয়েছে: {total_sent}\n"
             f"🔄 Backup Channels: {backup_count}"
         )
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
 
 async def show_status(query):
-    """Show detailed status of all accounts"""
+    """Show detailed status"""
     all_accs = get_all_accounts()
     total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
+    msg_count = len(load_messages())
     
     text = "📊 *স্ট্যাটাস*\n\n"
     for acc in all_accs:
@@ -1002,13 +1042,15 @@ async def show_status(query):
         sent = account_stats.get(aid, {}).get('sent', 0)
         banned = len(banned_channels_cache.get(aid, set()))
         text += f"• {name}: {status} | পাঠিয়েছে: {sent} | ⛔স্কিপ: {banned}\n"
-    text += f"\n📝 `{MESSAGE[:40]}`"
+    
+    text += f"\n📝 মোট মেসেজ: {msg_count} টি (random pick)"
     text += f"\n⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | সাইকেল {CYCLE_WAIT}s"
     text += f"\n📨 মোট: {total_sent}"
     text += f"\n🔄 Backup: {len(load_backup_channels())}"
     
     keyboard = [[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]]
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Text message handler"""
@@ -1018,7 +1060,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     awaiting = context.user_data.get('awaiting')
     
-    # ── Phone Number ──
+    # ── PHONE NUMBER ──
     if awaiting == 'phone_number':
         context.user_data['awaiting'] = None
         
@@ -1030,15 +1072,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ ভুল ফরম্যাট! সঠিক: `+8801XXXXXXXXX`", parse_mode='Markdown')
             return
         
-        # ✅ Auto API_ID/API_HASH from env — user doesn't need to provide
+        # ✅ Auto API from env
         api_id = API_ID_1
         api_hash = API_HASH_1
         
         if not api_id or not api_hash:
-            await update.message.reply_text("❌ API_ID_1 বা API_HASH_1 env এ সেট করা নেই!")
+            await update.message.reply_text("❌ API_ID_1 বা API_HASH_1 env এ সেট নেই!")
             return
         
-        status_msg = await update.message.reply_text(f"⏳ `{phone_number}` এ OTP পাঠানো হচ্ছে (API_ID: {api_id})...")
+        status_msg = await update.message.reply_text(f"⏳ `{phone_number}` এ OTP পাঠানো হচ্ছে...")
         
         try:
             client = TelegramClient(StringSession(), api_id, api_hash, receive_updates=False)
@@ -1055,8 +1097,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'client': client,
                 'step': 'waiting_code',
                 'phone_code_hash': sent.phone_code_hash,
-                'received_code': None,
-                'code_time': None
             }
             
             context.user_data['login_id'] = login_id
@@ -1064,19 +1104,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             await status_msg.edit_text(
                 f"✅ OTP পাঠানো হয়েছে `{phone_number}` এ!\n\n"
-                f"📱 টেলিগ্রাম থেকে OTP কোড টি লিখুন:\n\n"
+                f"টেলিগ্রাম থেকে OTP কোড টি লিখুন:\n\n"
                 f"শুধু কোড টি দিন (যেমন: `12345`):",
                 parse_mode='Markdown'
             )
         except Exception as e:
             await status_msg.edit_text(f"❌ Error: {str(e)[:200]}")
-            try:
-                await client.disconnect()
-            except:
-                pass
+            try: await client.disconnect()
+            except: pass
         return
     
-    # ── OTP Code ──
+    # ── OTP CODE ──
     if awaiting == 'otp_code':
         context.user_data['awaiting'] = None
         login_id = context.user_data.get('login_id')
@@ -1090,7 +1128,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         code = text.strip().replace(' ', '').replace('-', '')
         
         if not code.isdigit():
-            await update.message.reply_text("❌ শুধু সংখ্যা দিন! যেমন: `12345`")
+            await update.message.reply_text("❌ শুধু সংখ্যা দিন!")
             return
         
         status_msg = await update.message.reply_text("⏳ ভেরিফাই করা হচ্ছে...")
@@ -1123,7 +1161,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del phone_login_states[login_id]
             refresh_account_stats()
             
-            # ✅ Success message with BACK button
+            # ✅ Success with BACK button
             keyboard = [[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]]
             await status_msg.edit_text(
                 f"✅ *সফলভাবে লগইন!* 🎉\n\n"
@@ -1160,7 +1198,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del phone_login_states[login_id]
         return
     
-    # ── 2FA Password ──
+    # ── 2FA PASSWORD ──
     if awaiting == '2fa_password':
         context.user_data['awaiting'] = None
         login_id = context.user_data.get('login_id')
@@ -1199,7 +1237,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del phone_login_states[login_id]
             refresh_account_stats()
             
-            # ✅ Success with BACK button
             keyboard = [[InlineKeyboardButton("🔙 ফিরে", callback_data='back_main')]]
             await status_msg.edit_text(
                 f"✅ *2FA Login সফল!* 🎉\n\n"
@@ -1218,7 +1255,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del phone_login_states[login_id]
         return
     
-    # ── Add Session ──
+    # ── ADD MESSAGE ──
+    if awaiting == 'add_message':
+        context.user_data['awaiting'] = None
+        msgs = load_messages()
+        msgs.append(text)
+        save_messages(msgs)
+        await update.message.reply_text(
+            f"✅ *মেসেজ যোগ করা হয়েছে!*\n\n"
+            f"`{text[:40]}...`\n\n"
+            f"📊 মোট মেসেজ: {len(msgs)} টি\n\n"
+            f"প্রতি মেসেজে random emoji auto যোগ হবে।",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # ── ADD SESSION ──
     if awaiting == 'add_account':
         context.user_data['awaiting'] = None
         try:
@@ -1231,14 +1283,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             success, result = add_dynamic_account(name, session_string)
             if success:
                 refresh_account_stats()
-                await status_msg.edit_text(f"✅ *একাউন্ট যোগ!*\n👤 {name}\n🆔 `{result}`\n\nমোট: {len(get_all_accounts())}", parse_mode='Markdown')
+                await status_msg.edit_text(f"✅ *একাউন্ট যোগ!*\n👤 {name}\n🆔 `{result}`", parse_mode='Markdown')
             else:
                 await status_msg.edit_text(f"❌ {result}")
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {str(e)[:200]}")
         return
     
-    # ── Add Backup ──
+    # ── ADD BACKUP ──
     if awaiting == 'add_backup':
         context.user_data['awaiting'] = None
         try:
@@ -1258,19 +1310,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Error: {str(e)[:200]}")
         return
     
-    # ── Settings ──
+    # ── SETTINGS ──
     if not awaiting:
         return
     
     global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT
     
-    if awaiting == 'message':
-        MESSAGE = text
-        context.user_data['awaiting'] = None
-        save_data()
-        await update.message.reply_text(f"✅ মেসেজ আপডেট!\n\n`{MESSAGE}`\n\n🔥 প্রতি মেসেজে auto emoji যোগ হবে।", parse_mode='Markdown')
-    
-    elif awaiting == 'min':
+    if awaiting == 'min':
         try:
             v = int(text)
             if v < 1 or v >= MAX_INTERVAL:
@@ -1309,17 +1355,23 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ শুধু সংখ্যা দিন!")
         context.user_data['awaiting'] = None
 
+
 # ═══════════════════════════════════════════
-# Main
+# MAIN
 # ═══════════════════════════════════════════
 async def main():
     print("=" * 50, flush=True)
-    print("🤖 BOT v2.0 STARTING", flush=True)
+    print("🤖 BOT v2.1 STARTING", flush=True)
     print("=" * 50, flush=True)
     
     print("📂 Loading env accounts...", flush=True)
     await init_env_accounts()
     load_data()
+    
+    # Ensure messages.json has content
+    msgs = load_messages()
+    if not msgs:
+        save_messages([MESSAGE])
     
     backup_channels = load_backup_channels()
     if backup_channels:
@@ -1370,25 +1422,31 @@ async def main():
     await app.initialize()
     await app.start()
     
-    # Polling
+    # Polling — FIXED with allowed_updates=Update.ALL_TYPES
     poll_started = False
     for poll_attempt in range(5):
         try:
-            await app.updater.start_polling(drop_pending_updates=True, timeout=30, read_timeout=30, connect_timeout=30)
+            await app.updater.start_polling(
+                drop_pending_updates=True,
+                timeout=30,
+                read_timeout=30,
+                connect_timeout=30,
+                allowed_updates=Update.ALL_TYPES  # 🔥 THIS FIXES THE BUTTON CLICK ISSUE
+            )
             print("✅✅✅ BOT RUNNING! ✅✅✅", flush=True)
             poll_started = True
             break
         except Exception as e:
             if "Conflict" in str(e):
                 print(f"⚠️ Conflict detected (attempt {poll_attempt+1})", flush=True)
-            try:
-                httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true")
-            except:
-                pass
-            await asyncio.sleep(10 * (poll_attempt + 1))
-        else:
-            print(f"❌ Polling error: {str(e)[:100]}", flush=True)
-            await asyncio.sleep(5)
+                try:
+                    httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true")
+                except:
+                    pass
+                await asyncio.sleep(10 * (poll_attempt + 1))
+            else:
+                print(f"❌ Polling error: {str(e)[:100]}", flush=True)
+                await asyncio.sleep(5)
     
     if not poll_started:
         print("❌❌❌ Polling start করতে ব্যর্থ!", flush=True)
