@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-📱 ADVANCED TELEGRAM MASS MESSAGING BOT v3.0
+📱 ADVANCED TELEGRAM MASS MESSAGING BOT v3.1
 ✅ Plain message only (NO emoji insertion)
+✅ NEW: Quote-reply to a real user's message in each group
 ✅ Fixed: duplicate session / two-IP error (single cached client per account)
 ✅ Backup Channels feature REMOVED
 ✅ Groups List feature REMOVED
@@ -49,7 +50,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 60, flush=True)
-print("🤖 MESSAGING BOT v3.0 — PLAIN MESSAGE", flush=True)
+print("🤖 MESSAGING BOT v3.1 — REPLY MODE", flush=True)
 print("=" * 60, flush=True)
 
 # ══════════ ENVIRONMENT ══════════
@@ -233,7 +234,7 @@ def home():
     all_accs = get_all_accounts()
     running_count = sum(1 for acc in all_accs if account_stats.get(acc['id'], {}).get('running', False))
     total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
-    return f"✅ Bot v3.0 | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Sent: {total_sent}"
+    return f"✅ Bot v3.1 | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Sent: {total_sent}"
 
 @web_app.route("/health")
 def health():
@@ -348,6 +349,26 @@ async def is_account_restricted(client):
     except Exception:
         return False, None
 
+async def get_reply_target(client, group):
+    """
+    💬 Find a recent message from a REAL USER (not bot, not channel post)
+    in this group — to quote-reply to it.
+    Returns the message object, or None if not found.
+    """
+    try:
+        async for m in client.iter_messages(group, limit=30):
+            sender = await m.get_sender()
+            if sender is None:
+                continue
+            if getattr(sender, 'bot', False):      # ❌ skip bots
+                continue
+            if m.from_id is None:                   # ❌ skip channel posts
+                continue
+            return m
+    except Exception as e:
+        logger.debug(f"Reply target error: {e}")
+    return None
+
 async def notify_owner_restricted(acc_name, reason):
     try:
         bot_app = Application.builder().token(BOT_TOKEN).build()
@@ -410,10 +431,17 @@ async def run_account_messaging(acc):
                     continue
 
                 try:
-                    # ✅ PLAIN MESSAGE — no emoji, no modification
                     msg = get_random_message()
-                    await client.send_message(group, msg)
-                    logger.info(f"✅ [{acc_name}] → {group.title}")
+
+                    # 💬 Quote reply to a real user's message
+                    reply_target = await get_reply_target(client, group)
+                    if reply_target is not None:
+                        await client.send_message(group, msg, reply_to=reply_target.id)
+                        logger.info(f"✅ [{acc_name}] → {group.title} (reply to user)")
+                    else:
+                        await client.send_message(group, msg)
+                        logger.info(f"✅ [{acc_name}] → {group.title} (plain)")
+
                     account_stats[acc_id]['sent'] += 1
                     save_data()
 
@@ -515,17 +543,18 @@ def stop_all_accounts():
         stop_account(acc['id'])
 
 async def test_session_only(session_string):
+    """Tests a session string. Returns (success, name_or_error, user_id, fresh_session)."""
     client = None
     try:
         if not API_ID_1 or not API_HASH_1:
-            return False, "API_ID_1 or API_HASH_1 not set in env!", None
+            return False, "API_ID_1 or API_HASH_1 not set in env!", None, None
         client = TelegramClient(StringSession(session_string), API_ID_1, API_HASH_1, receive_updates=False)
         await client.start()
         me = await client.get_me()
-        await client.disconnect()
-        return True, me.first_name, me.id
+        fresh_session = client.session.save()   # 🔥 updated session string
+        return True, me.first_name, me.id, fresh_session
     except Exception as e:
-        return False, str(e), None
+        return False, str(e), None, None
     finally:
         if client is not None:
             try: await client.disconnect()
@@ -536,7 +565,6 @@ async def test_session_only(session_string):
 # ═══════════════════════════════════════════
 
 def main_menu_keyboard():
-    emoji = ""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("▶️ Start All", callback_data='start_all'),
          InlineKeyboardButton("⏹️ Stop All", callback_data='stop_all')],
@@ -554,10 +582,8 @@ def main_menu_text():
     total = len(all_accs)
     running = sum(1 for acc in all_accs if account_stats.get(acc['id'], {}).get('running', False))
     total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
-    msg_count = len(load_messages())
     return (
-        f"🤖 *Messaging Bot v3.0*\n\n"
-        f"📝 {msg_count} message(s) in pool (random pick, plain text)\n\n"
+        f"🤖 *Messaging Bot v3.1*\n\n"
         f"📊 Accounts: {total} (Running: {running})\n"
         f"⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | Cycle {CYCLE_WAIT}s\n"
         f"📨 Total Sent: {total_sent}"
@@ -629,7 +655,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚙️ *Settings*\n\n"
             f"📝 Messages in pool: {msg_count}\n"
             f"⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | Cycle {CYCLE_WAIT}s\n"
-            f"📄 Mode: Plain message (no emoji added)"
+            f"💬 Mode: Quote-reply to user's message"
         )
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -730,6 +756,8 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📱 *Add Session String*\n\n"
             "Send the **Session String** only.\n\n"
             "API_ID_1 and API_HASH_1 will be used automatically.\n\n"
+            "⚠️ Make sure the same session is NOT running anywhere else "
+            "(old deploys, local scripts), or it will die permanently.\n\n"
             "Send it now:",
             parse_mode='Markdown'
         )
@@ -800,7 +828,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_status(query):
     all_accs = get_all_accounts()
     total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
-    msg_count = len(load_messages())
 
     text = "📊 *Status*\n\n"
     for acc in all_accs:
@@ -811,7 +838,7 @@ async def show_status(query):
         skipped = len(account_stats.get(aid, {}).get('failed_channels', []))
         text += f"• {name}: {status} | Sent: {sent} | ⛔ Skipped: {skipped}\n"
 
-    text += f"\n📝 Messages: {msg_count} (random, plain)"
+    text += f"\n💬 Mode: Quote-reply to user's message"
     text += f"\n⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | Cycle {CYCLE_WAIT}s"
     text += f"\n📨 Total: {total_sent}"
 
@@ -995,11 +1022,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting'] = None
         try:
             status_msg = await update.message.reply_text("⏳ Testing session...")
-            success, name, user_id = await test_session_only(text)
+            success, name, user_id, fresh_session = await test_session_only(text)
             if not success:
-                await status_msg.edit_text(f"❌ Invalid session!\n{name}")
+                if 'two different IP' in str(name) or 'AuthKeyUnregistered' in str(name):
+                    await status_msg.edit_text(
+                        "❌ This session is DEAD (was used from two IPs).\n\n"
+                        "It cannot be fixed.\n"
+                        "➡️ Delete this account if listed, then use 📱 Phone Login to create a fresh session."
+                    )
+                else:
+                    await status_msg.edit_text(f"❌ Invalid session!\n{name}")
                 return
-            success, result = add_dynamic_account(name, text)
+            success, result = add_dynamic_account(name, fresh_session)
             if success:
                 refresh_account_stats()
                 kb = [[InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
@@ -1060,7 +1094,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ═══════════════════════════════════════════
 async def main():
     print("=" * 50, flush=True)
-    print("🤖 BOT v3.0 STARTING", flush=True)
+    print("🤖 BOT v3.1 STARTING", flush=True)
     print("=" * 50, flush=True)
 
     await init_env_accounts()
@@ -1078,7 +1112,7 @@ async def main():
     if dynamic: print(f"📂 {len(dynamic)} dynamic accounts", flush=True)
     auth_sessions = load_auth_sessions()
     if auth_sessions: print(f"📂 {len(auth_sessions)} phone accounts", flush=True)
-    print("📝 Mode: PLAIN message (no emoji added)", flush=True)
+    print("💬 Mode: Quote-reply to user's message", flush=True)
 
     # Clear webhook
     for attempt in range(5):
