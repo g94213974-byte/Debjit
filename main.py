@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-📱 ADVANCED TELEGRAM MASS MESSAGING BOT v4.0
+📱 ADVANCED TELEGRAM MASS MESSAGING BOT v4.1
 ✅ ADMIN SYSTEM (owner-controlled, custom expiry time, auto-stop on expiry)
+✅ NEW: Flexible time format ('1 day 10 min', '2d 5h', '45m', 'perm')
+✅ NEW: Admin time EXTENDS (adds to remaining time)
+✅ Fixed: global declaration SyntaxError
 ✅ Plain message + Quote-reply to real user's message
 ✅ Single cached client per account (two-IP error fix)
 ✅ Full English UI
@@ -46,7 +49,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 60, flush=True)
-print("🤖 MESSAGING BOT v4.0 — ADMIN SYSTEM", flush=True)
+print("🤖 MESSAGING BOT v4.1 — ADMIN SYSTEM", flush=True)
 print("=" * 60, flush=True)
 
 # ══════════ ENVIRONMENT ══════════
@@ -82,6 +85,7 @@ account_clients = {}
 account_stats = {}
 phone_login_states = {}
 data_file = "bot_data.json"
+SHOW_START_TO_OTHERS = True  # if False → unauthorized users see NOTHING on /start
 
 # ══════════ PERMISSIONS ══════════
 def is_owner(user_id):
@@ -136,23 +140,51 @@ def remaining_time_str(expires_at):
     days = delta.days
     hours = delta.seconds // 3600
     mins = (delta.seconds % 3600) // 60
-    return f"{days}d {hours}h {mins}m left"
+    secs = delta.seconds % 60
+    parts = []
+    if days: parts.append(f"{days}d")
+    if hours: parts.append(f"{hours}h")
+    if mins: parts.append(f"{mins}m")
+    if not days and not hours and secs: parts.append(f"{secs}s")
+    return " ".join(parts) + " left" if parts else "<1s left"
 
 def parse_duration(text):
-    """'30d' / '12h' / '45m' / 'perm' → datetime or None (permanent)."""
+    """
+    Flexible time parser. Examples:
+    '1 day 10 min', '2d 5h', '30m', '1 hour 30 seconds', '45', 'perm'
+    Returns datetime (expiry) or None (permanent).
+    """
     t = text.strip().lower()
-    if t in ('perm', 'permanent', '0', '0d', 'inf'):
+    if t in ('perm', 'permanent', 'inf', 'unlimited', '∞'):
         return None
-    m = re.match(r'^(\d+)\s*([dhm])?$', t)
-    if not m:
+
+    # Normalize words to unit letters
+    t = t.replace('seconds', 's').replace('second', 's').replace('secs', 's').replace('sec', 's')
+    t = t.replace('minutes', 'm').replace('minute', 'm').replace('mins', 'm').replace('min', 'm')
+    t = t.replace('hours', 'h').replace('hour', 'h').replace('hrs', 'h').replace('hr', 'h')
+    t = t.replace('days', 'd').replace('day', 'd')
+
+    total = timedelta()
+    found = False
+    # "1 day 10 min" → [('1','d'), ('10','m')]
+    for num, unit in re.findall(r'(\d+)\s*([dhms])?', t):
+        if not num:
+            continue
+        n = int(num)
+        unit = unit or 'm'   # no unit → minutes
+        if unit == 'd':
+            total += timedelta(days=n)
+        elif unit == 'h':
+            total += timedelta(hours=n)
+        elif unit == 's':
+            total += timedelta(seconds=n)
+        else:
+            total += timedelta(minutes=n)
+        found = True
+
+    if not found:
         raise ValueError("bad duration")
-    n = int(m.group(1))
-    unit = m.group(2) or 'd'
-    if unit == 'd':
-        return datetime.now() + timedelta(days=n)
-    if unit == 'h':
-        return datetime.now() + timedelta(hours=n)
-    return datetime.now() + timedelta(minutes=n)
+    return datetime.now() + total
 
 # ══════════ MESSAGES (per-user pool) ══════════
 def messages_file_for(user_id):
@@ -312,7 +344,7 @@ def home():
     running_count = sum(1 for acc in all_accs if account_stats.get(acc['id'], {}).get('running', False))
     total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
     admin_count = len(load_admins())
-    return f"✅ Bot v4.0 | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Sent: {total_sent} | Admins: {admin_count}"
+    return f"✅ Bot v4.1 | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Sent: {total_sent} | Admins: {admin_count}"
 
 @web_app.route("/health")
 def health():
@@ -355,11 +387,13 @@ def save_data():
     except:
         pass
 
-# ══════════ START-VISIBILITY TOGGLE ══════════
-SHOW_START_TO_OTHERS = True  # if False → unauthorized users see NOTHING on /start
-
 # ══════════ TELEGRAM HELPERS ══════════
 async def get_client(acc):
+    """
+    🔥 FIX (two-IP error): One client per account, reused if connected.
+    Old client disconnected before new one — a session never connects
+    from two IPs simultaneously.
+    """
     acc_id = acc['id']
     old = account_clients.get(acc_id)
     if old is not None:
@@ -426,6 +460,10 @@ async def is_account_restricted(client):
         return False, None
 
 async def get_reply_target(client, group):
+    """
+    💬 Find a recent message from a REAL USER (not bot, not channel post)
+    in this group — to quote-reply to it.
+    """
     try:
         async for m in client.iter_messages(group, limit=30):
             sender = await m.get_sender()
@@ -502,6 +540,7 @@ async def run_account_messaging(acc, owner_user_id):
                 try:
                     msg = get_random_message_for(owner_user_id)
 
+                    # 💬 Quote reply to a real user's message
                     reply_target = await get_reply_target(client, group)
                     if reply_target is not None:
                         await client.send_message(group, msg, reply_to=reply_target.id)
@@ -553,6 +592,7 @@ async def run_account_messaging(acc, owner_user_id):
 
                 await asyncio.sleep(random.randint(MIN_INTERVAL, MAX_INTERVAL))
 
+            # Re-check account restriction
             is_restricted, reason = await is_account_restricted(client)
             if is_restricted:
                 logger.error(f"❌ [{acc_name}] Restricted: {reason}")
@@ -572,6 +612,7 @@ async def run_account_messaging(acc, owner_user_id):
                     break
                 await asyncio.sleep(1)
 
+            # Reconnect every 15 cycles
             if cycle_count % 15 == 0 and not stop_flags.get(acc_id, False):
                 logger.info(f"[{acc_name}] Reconnecting...")
                 try:
@@ -606,11 +647,9 @@ def stop_account(acc_id):
         account_stats[acc_id]['running'] = False
 
 def stop_accounts_of(user_id):
-    """Stop every running account belonging to a user (used on admin expiry/delete)."""
+    """Stop every running account belonging to a user (admin expiry/delete)."""
     for acc in get_all_accounts(user_id):
         stop_account(acc['id'])
-        # force-disconnect too
-        asyncio.ensure_future(disconnect_client(acc['id']))
 
 def stop_all_accounts():
     for acc in get_all_accounts():
@@ -625,7 +664,6 @@ async def admin_expiry_checker():
             for a in load_admins():
                 if is_valid_admin(a['user_id']):
                     valid_ids.add(a['user_id'])
-            # any running account whose owner is not valid → stop
             for acc in get_all_accounts():
                 oid = acc.get('owner_id', OWNER_ID)
                 if oid not in valid_ids and account_stats.get(acc['id'], {}).get('running', False):
@@ -693,7 +731,7 @@ def main_menu_text(user_id):
         a = get_admin(user_id)
         expiry = f"\n⏳ Admin time: {remaining_time_str(a.get('expires_at') if a else None)}"
     return (
-        f"🤖 *Messaging Bot v4.0*\n"
+        f"🤖 *Messaging Bot v4.1*\n"
         f"👤 Role: {role}{expiry}\n\n"
         f"📊 Accounts: {total} (Running: {running})\n"
         f"⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | Cycle {CYCLE_WAIT}s\n"
@@ -715,6 +753,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ──── CALLBACK HANDLER ────
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT, SHOW_START_TO_OTHERS
+
     query = update.callback_query
     await query.answer()
 
@@ -727,8 +767,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text("​")
         return
-
-    global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT, SHOW_START_TO_OTHERS
 
     # ===== START ALL (own accounts only) =====
     if query.data == 'start_all':
@@ -794,12 +832,14 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"👑 *Admin Panel*\n\n"
             f"👥 Total Admins: {len(admins)}\n\n"
-            f"➕ Add: send `USER_ID 30d` (d=days, h=hours, m=minutes, perm=permanent)\n\n"
-            f"⏰ Time শেষ হলে admin-এর সব account automatic stop হবে।"
+            f"➕ Add: send `USER_ID TIME`\n"
+            f"Time examples: `30d`, `1 day 10 min`, `12h 30m`, `45`, `perm`\n\n"
+            f"💡 If admin already exists → time will be ADDED to remaining time.\n\n"
+            f"⏰ When time ends, admin's accounts auto-stop."
         )
         keyboard = [
             [InlineKeyboardButton("📋 Admin List & Stats", callback_data='admin_list')],
-            [InlineKeyboardButton("➕ Add Admin", callback_data='add_admin')],
+            [InlineKeyboardButton("➕ Add / Extend Admin", callback_data='add_admin')],
             [InlineKeyboardButton(f"👻 Start-msg to others: {'ON' if SHOW_START_TO_OTHERS else 'OFF'}",
                                   callback_data='toggle_startmsg')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_main')],
@@ -838,6 +878,9 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_admins(admins)
         # 🔥 immediate stop of that admin's accounts
         stop_accounts_of(target)
+        await asyncio.sleep(1)
+        for acc in get_all_accounts(target):
+            await disconnect_client(acc['id'])
         kb = [[InlineKeyboardButton("🔙 Back", callback_data='admin_list')]]
         await query.edit_message_text(
             f"✅ Admin `{target}` deleted!\nAll their accounts stopped.",
@@ -849,13 +892,16 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data['awaiting'] = 'add_admin'
         await query.edit_message_text(
-            "➕ *Add Admin*\n\n"
+            "➕ *Add / Extend Admin*\n\n"
             "Send: `USER_ID TIME`\n\n"
-            "Examples:\n"
+            "Time examples (any format works):\n"
             "`123456789 30d` → 30 days\n"
-            "`123456789 12h` → 12 hours\n"
-            "`123456789 45m` → 45 minutes\n"
+            "`123456789 1 day 10 min` → mixed\n"
+            "`123456789 12h 30m` → 12h 30m\n"
+            "`123456789 90` → 90 minutes\n"
+            "`123456789 45 sec` → 45 seconds\n"
             "`123456789 perm` → permanent\n\n"
+            "💡 Existing admin? Time gets ADDED to remaining time.\n\n"
             "Send now:",
             parse_mode='Markdown'
         )
@@ -1067,18 +1113,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     awaiting = context.user_data.get('awaiting')
 
-    # ===== Add Admin — OWNER ONLY =====
+    # ===== Add / Extend Admin — OWNER ONLY =====
     if awaiting == 'add_admin':
         context.user_data['awaiting'] = None
         if not is_owner(uid):
             return
         try:
-            parts = text.split()
+            parts = text.split(None, 1)
             target_id = int(parts[0])
             expires_at = parse_duration(parts[1]) if len(parts) > 1 else None
         except:
             await update.message.reply_text(
-                "❌ Wrong format!\nExample: `123456789 30d` or `123456789 perm`",
+                "❌ Wrong format!\nExample: `123456789 1 day 10 min` or `123456789 30d` or `123456789 perm`",
                 parse_mode='Markdown'
             )
             return
@@ -1090,17 +1136,41 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         admins = load_admins()
         for a in admins:
             if a['user_id'] == target_id:
-                # update time instead
-                a['expires_at'] = expires_at.isoformat() if expires_at else None
-                a['updated_at'] = datetime.now().isoformat()
+                # 🔥 EXISTING ADMIN → NEW TIME = remaining time + given time
+                if expires_at is None:
+                    # perm → permanent
+                    a['expires_at'] = None
+                    a['updated_at'] = datetime.now().isoformat()
+                    save_admins(admins)
+                    kb = [[InlineKeyboardButton("🔙 Back", callback_data='admin_panel')]]
+                    await update.message.reply_text(
+                        f"✅ Admin `{target_id}` → ♾️ Permanent now!",
+                        parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb)
+                    )
+                    return
+
+                now = datetime.now()
+                try:
+                    current_exp = datetime.fromisoformat(a['expires_at']) if a.get('expires_at') else None
+                except:
+                    current_exp = None
+
+                # Remaining time er upor add hobe; expired hole ekhon theke
+                base = current_exp if (current_exp and current_exp > now) else now
+                new_exp = base + (expires_at - now)   # duration add
+
+                a['expires_at'] = new_exp.isoformat()
+                a['updated_at'] = now.isoformat()
                 save_admins(admins)
                 kb = [[InlineKeyboardButton("🔙 Back", callback_data='admin_panel')]]
                 await update.message.reply_text(
-                    f"✅ Admin `{target_id}` time updated!\n⏳ {remaining_time_str(a['expires_at'])}",
+                    f"✅ Admin `{target_id}` time EXTENDED!\n\n"
+                    f"⏳ New time: {remaining_time_str(a['expires_at'])}",
                     parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb)
                 )
                 return
 
+        # 👤 New admin
         admins.append({
             'user_id': target_id,
             'expires_at': expires_at.isoformat() if expires_at else None,
@@ -1109,7 +1179,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_admins(admins)
         kb = [[InlineKeyboardButton("🔙 Back", callback_data='admin_panel')]]
         await update.message.reply_text(
-            f"✅ *Admin added!*\n\n👤 `{target_id}`\n⏳ {remaining_time_str(expires_at.isoformat() if expires_at else None)}\n\n"
+            f"✅ *Admin added!*\n\n"
+            f"👤 `{target_id}`\n"
+            f"⏳ Time: {remaining_time_str(expires_at.isoformat() if expires_at else None)}\n\n"
             f"The admin can now use /start.",
             parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb)
         )
@@ -1147,6 +1219,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         status_msg = await update.message.reply_text(f"⏳ Sending OTP to `{phone_number}`...")
 
+        client = None
         try:
             client = TelegramClient(StringSession(), api_id, api_hash, receive_updates=False)
             await client.connect()
@@ -1164,8 +1237,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("✅ OTP sent!\n\nEnter the code (e.g. `12345`):", parse_mode='Markdown')
         except Exception as e:
             await status_msg.edit_text(f"❌ Error: {str(e)[:200]}")
-            try: await client.disconnect()
-            except: pass
+            if client is not None:
+                try: await client.disconnect()
+                except: pass
         return
 
     # ===== OTP Code =====
@@ -1359,7 +1433,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     global SHOW_START_TO_OTHERS
     print("=" * 50, flush=True)
-    print("🤖 BOT v4.0 STARTING", flush=True)
+    print("🤖 BOT v4.1 STARTING", flush=True)
     print("=" * 50, flush=True)
 
     await init_env_accounts()
