@@ -694,8 +694,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT, EMOJI_ENABLED
     
     # ===== EMOJI TOGGLE 🧩 =====
-    elif False:
-        pass
     if query.data == 'toggle_emoji':
         EMOJI_ENABLED = not EMOJI_ENABLED
         save_data()
