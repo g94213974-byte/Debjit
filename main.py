@@ -25,7 +25,12 @@ import uuid
 from datetime import datetime, timedelta
 from telethon import TelegramClient, errors, functions
 from telethon.sessions import StringSession
-from telethon.tl.functions.account import UpdateProfileRequest, UploadProfilePhotoRequest
+# ❌ AGE EROKOM CHILO:
+# from telethon.tl.functions.account import UpdateProfileRequest, UploadProfilePhotoRequest
+
+# ✅ EKHON EIROKOM KORO:
+from telethon.tl.functions.account import UpdateProfileRequest
+from telethon.tl.functions.photos import UploadProfilePhotoRequest
 from telethon.errors import (
     FloodWaitError,
     SessionPasswordNeededError,
