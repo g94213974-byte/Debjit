@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-📱 ADVANCED TELEGRAM MASS MESSAGING BOT v4.3
+📱 ADVANCED TELEGRAM MASS MESSAGING BOT v4.4
 ✅ ADMIN SYSTEM (owner-controlled, custom expiry time, auto-stop on expiry)
 ✅ Flexible time format ('1 day 10 min', '2d 5h', '45m', 'perm')
-✅ Admin time EXTENDS (adds to remaining time)
-✅ Fixed: account delete bug (unique IDs — no more wrong account deleted!)
+✅ Fixed: account delete bug (unique IDs)
 ✅ Fixed: dead-session now notifies owner instead of failing silently
-✅ Status moved inside Settings
-✅ Delete ALL moved inside Delete Account menu
-✅ NEW: 🎨 Profile Setup → Default (all accounts) + Customize (per account) + 1-Click Apply All
+✅ Status inside Settings | Delete ALL inside Delete Account
+✅ NEW: 🎨 Default Profile with NAME+LOGO POOL
+   → Add as many names/logos as you want (4, 5, 6...)
+   → 1-Click Apply All: 1st name/logo → 1st account, 2nd → 2nd account...
+✅ Customize (per account) option REMOVED
 ✅ Back buttons on all prompts
 """
 
@@ -53,7 +54,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 60, flush=True)
-print("🤖 MESSAGING BOT v4.3 — PROFILE SETUP + FIXES", flush=True)
+print("🤖 MESSAGING BOT v4.4 — PROFILE POOL", flush=True)
 print("=" * 60, flush=True)
 
 # ══════════ ENVIRONMENT ══════════
@@ -186,10 +187,8 @@ def parse_duration(text):
         raise ValueError("bad duration")
     return datetime.now() + total
 
-# ══════════ UNIQUE ID GENERATOR (bug fix!) ══════════
+# ══════════ UNIQUE ID GENERATOR ══════════
 def gen_unique_id(prefix, owner_id):
-    """🔥 FIX: len()-based IDs got reused after deletion → wrong account deleted.
-    uuid guarantees every ID is unique forever."""
     return f"{prefix}_{owner_id}_{uuid.uuid4().hex[:6]}"
 
 # ══════════ MESSAGES (per-user pool) ══════════
@@ -221,7 +220,7 @@ def get_random_message_for(user_id):
     msgs = load_messages_for(user_id)
     return random.choice(msgs) if msgs else MESSAGE
 
-# ══════════ PROFILE CONFIGS (🎨 new feature) ══════════
+# ══════════ 🎨 DEFAULT PROFILE (NAME+LOGO POOL) ══════════
 def load_profiles():
     if os.path.exists(PROFILE_FILE):
         try:
@@ -238,33 +237,17 @@ def save_profiles(profiles):
     except:
         pass
 
-def get_profile(acc_id):
-    """Custom profile for a specific account ({} if none)."""
-    return load_profiles().get(acc_id, {})
-
 def get_default_profile():
     return load_profiles().get(DEFAULT_PROFILE_KEY, {})
 
-def get_effective_profile(acc_id):
-    """Custom thakle custom, na thakle Default profile."""
-    custom = get_profile(acc_id)
-    if custom and (custom.get('name') or custom.get('bio') or custom.get('photo') or custom.get('channels')):
-        return custom
-    return get_default_profile()
-
-def set_profile_key(acc_id, key, value):
+def save_default_profile(cfg):
     profiles = load_profiles()
-    profiles.setdefault(acc_id, {})[key] = value
+    profiles[DEFAULT_PROFILE_KEY] = cfg
     save_profiles(profiles)
 
-def clear_profile(acc_id):
-    profiles = load_profiles()
-    if acc_id in profiles:
-        del profiles[acc_id]
-        save_profiles(profiles)
-
-def profile_is_empty(cfg):
-    return not (cfg.get('name') or cfg.get('bio') or cfg.get('photo') or cfg.get('channels'))
+def default_is_empty():
+    cfg = get_default_profile()
+    return not (cfg.get('names') or cfg.get('photos') or cfg.get('bio') or cfg.get('channels'))
 
 # ══════════ FILE HELPERS ══════════
 def load_auth_sessions():
@@ -349,7 +332,7 @@ def add_dynamic_account(name, session_string, owner_id, api_id=0, api_hash=""):
     for acc in accounts:
         if acc['session'] == session_string:
             return False, "Session already exists!"
-    new_id = gen_unique_id("acc_dyn", owner_id)   # 🔥 unique ID fix
+    new_id = gen_unique_id("acc_dyn", owner_id)
     detected_api_id = api_id if api_id else API_ID_1
     detected_api_hash = api_hash if api_hash else API_HASH_1
     accounts.append({
@@ -367,14 +350,12 @@ def remove_account_by_id(account_id):
         if acc['id'] == account_id:
             accounts.pop(i)
             save_dynamic_accounts(accounts)
-            clear_profile(account_id)
             return True
     auth_sessions = load_auth_sessions()
     for i, acc in enumerate(auth_sessions):
         if acc['id'] == account_id:
             auth_sessions.pop(i)
             save_auth_sessions(auth_sessions)
-            clear_profile(account_id)
             return True
     for i, acc in enumerate(ENV_ACCOUNTS):
         if acc['id'] == account_id:
@@ -397,7 +378,7 @@ def home():
     running_count = sum(1 for acc in all_accs if account_stats.get(acc['id'], {}).get('running', False))
     total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
     admin_count = len(load_admins())
-    return f"✅ Bot v4.3 | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Sent: {total_sent} | Admins: {admin_count}"
+    return f"✅ Bot v4.4 | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Sent: {total_sent} | Admins: {admin_count}"
 
 @web_app.route("/health")
 def health():
@@ -508,16 +489,11 @@ async def is_account_restricted(client):
         return False, None
 
 async def get_reply_target(client, group):
-    """
-    💬 Find a recent message from a REAL USER to quote-reply.
-    🔧 FIX: uses cached m.sender (no extra API call per message) + smaller
-    scan limit → much faster, far less FloodWait → messages actually send.
-    """
     try:
         async for m in client.iter_messages(group, limit=10):
             if m.from_id is None:
                 continue
-            sender = m.sender  # cached from batch — no extra API call
+            sender = m.sender
             if sender is None:
                 continue
             if getattr(sender, 'bot', False):
@@ -550,34 +526,34 @@ async def join_link(client, link):
         username = m.group(1) if m else link.lstrip('@')
         await client(functions.channels.JoinChannelRequest(username))
 
-async def apply_profile(acc, cfg, bot=None):
-    """🎨 Apply name + photo + bio + join all saved channels/groups to one account."""
+async def apply_profile(acc, name, photo_file_id, bio, channels, bot=None):
+    """🎨 Apply one account's profile: name + photo + bio + join channels."""
     results = []
     acc_id = acc['id']
     client = await get_client(acc)
     if not client.is_user_authorized():
         return ["❌ Session dead! Delete this account & login again."]
 
-    if cfg.get('name'):
+    if name:
         try:
-            await client(UpdateProfileRequest(first_name=cfg['name']))
+            await client(UpdateProfileRequest(first_name=name))
             results.append("✅ Name updated")
         except Exception as e:
             results.append(f"❌ Name: {str(e)[:50]}")
         await asyncio.sleep(2)
 
-    if cfg.get('bio'):
+    if bio:
         try:
-            await client(UpdateProfileRequest(about=cfg['bio']))
+            await client(UpdateProfileRequest(about=bio))
             results.append("✅ Bio updated")
         except Exception as e:
             results.append(f"❌ Bio: {str(e)[:50]}")
         await asyncio.sleep(2)
 
-    if cfg.get('photo'):
+    if photo_file_id:
         photo_path = None
         try:
-            tg_file = await bot.get_file(cfg['photo'])
+            tg_file = await bot.get_file(photo_file_id)
             photo_path = f"prof_{acc_id}.jpg"
             await tg_file.download_to_drive(custom_path=photo_path)
             with open(photo_path, 'rb') as fh:
@@ -592,7 +568,7 @@ async def apply_profile(acc, cfg, bot=None):
                 except: pass
         await asyncio.sleep(2)
 
-    for link in cfg.get('channels', []):
+    for link in channels:
         try:
             await join_link(client, link)
             results.append(f"✅ Joined: {link}")
@@ -621,7 +597,6 @@ async def run_account_messaging(acc, owner_user_id):
         me = await client.get_me()
         logger.info(f"✅ [{acc_name}] Logged in: {me.first_name}")
 
-        # 🔧 FIX: dead session → notify user instead of silent failure
         if not client.is_user_authorized():
             logger.error(f"❌ [{acc_name}] Session unauthorized/dead")
             await notify_user(owner_user_id,
@@ -850,7 +825,7 @@ def main_menu_text(user_id):
         a = get_admin(user_id)
         expiry = f"\n⏳ Admin time: {remaining_time_str(a.get('expires_at') if a else None)}"
     return (
-        f"🤖 *Messaging Bot v4.3*\n"
+        f"🤖 *Messaging Bot v4.4*\n"
         f"👤 Role: {role}{expiry}\n\n"
         f"📊 Accounts: {total} (Running: {running})\n"
         f"⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | Cycle {CYCLE_WAIT}s\n"
@@ -945,64 +920,130 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             kb = [[InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
             await query.edit_message_text("❌ No accounts! Add one first.", reply_markup=InlineKeyboardMarkup(kb))
             return
-        dflt = get_default_profile()
-        dflt_state = "🟢 set" if not profile_is_empty(dflt) else "⚪ empty"
+        cfg = get_default_profile()
+        names = cfg.get('names', [])
+        photos = cfg.get('photos', [])
         keyboard = [
-            [InlineKeyboardButton(f"⚙️ Default Profile ({dflt_state})", callback_data='profdefault')],
-            [InlineKeyboardButton("🎨 Customize (per account alada)", callback_data='profcustom_menu')],
+            [InlineKeyboardButton(f"⚙️ Default Profile (Names: {len(names)} | Logos: {len(photos)})",
+                                  callback_data='profdefault')],
             [InlineKeyboardButton("⚡ 1-CLICK APPLY ALL", callback_data='profapply_all')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_main')],
         ]
         await query.edit_message_text(
             "🎨 *Profile Setup*\n\n"
-            "⚙️ **Default Profile** — ekta name+photo+bio+link set koro, SOB account er jonno.\n\n"
-            "🎨 **Customize** — proti account er (#1, #2, #3...) alada name/photo/bio/link set koro.\n"
-            "Custom set thakle 1-Click e custom apply hobe, na thakle Default apply hobe.\n\n"
-            "⚡ **1-CLICK APPLY ALL** — bot e login thaka SOB account er nam, logo, bio, "
-            "channel link ek sathe change hoye jabe!",
+            "⚙️ **Default Profile** — Name ar Logo POOL banao (4, 5, 6 joto khusi add koro) + ekta Bio + Channel/Group link.\n\n"
+            "⚡ **1-CLICK APPLY ALL** — sob account e alada alada lagbe:\n"
+            "• Prothome add kora Name+Logo → prothome login kora account\n"
+            "• 2nd Name+Logo → 2nd account\n"
+            "• 3rd → 3rd account... ei vabe order onujayi sob account e vate jabe!\n\n"
+            f"📊 Accounts: {len(accs)} | 📝 Names: {len(names)} | 🖼 Logos: {len(photos)}",
             parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    # ── ⚙️ DEFAULT PROFILE ──
+    # ── ⚙️ DEFAULT PROFILE (POOL) ──
     elif query.data == 'profdefault':
         cfg = get_default_profile()
+        names = cfg.get('names', [])
+        photos = cfg.get('photos', [])
         channels = cfg.get('channels', [])
         text = (
             f"⚙️ *Default Profile* (sob account er jonno)\n\n"
-            f"📝 Name: `{cfg.get('name', '—')}`\n"
-            f"📄 Bio: `{cfg.get('bio', '—')}`\n"
-            f"🖼 Photo: {'✅ Set' if cfg.get('photo') else '—'}\n"
-            f"📢 Channels/Groups ({len(channels)}):\n"
+            f"📝 Names ({len(names)}):\n"
         )
+        for i, n in enumerate(names, 1):
+            text += f"  {i}. `{n}`\n"
+        text += f"\n🖼 Logos: {len(photos)} set ✓\n" if photos else "\n🖼 Logos: none\n"
+        text += f"\n📄 Bio: `{cfg.get('bio', '—')}`\n"
+        text += f"\n📢 Channels/Groups ({len(channels)}):\n"
         for ch in channels:
             text += f"  • `{ch}`\n"
+        text += (
+            "\n💡 Apply All korle:\n"
+            "1st Name+Logo → 1st account, 2nd → 2nd account...\n"
+            "(Pool sesh hole abar 1 theke cycle korbe)"
+        )
         keyboard = [
-            [InlineKeyboardButton("📝 Set Name", callback_data='def_name')],
-            [InlineKeyboardButton("🖼 Set Photo", callback_data='def_photo')],
+            [InlineKeyboardButton("➕ Add Name", callback_data='def_add_name'),
+             InlineKeyboardButton("🗑 Del Name", callback_data='def_del_name')],
+            [InlineKeyboardButton("➕ Add Logo/Photo", callback_data='def_add_photo'),
+             InlineKeyboardButton("🗑 Del Logo", callback_data='def_del_photo')],
             [InlineKeyboardButton("📄 Set Bio", callback_data='def_bio')],
             [InlineKeyboardButton("📢 Set Channels/Groups", callback_data='def_chan')],
+            [InlineKeyboardButton("♻️ Reset All", callback_data='def_reset')],
             [InlineKeyboardButton("🔙 Back", callback_data='profile_setup')],
         ]
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif query.data == 'def_name':
-        context.user_data['awaiting'] = 'def_name'
+    elif query.data == 'def_add_name':
+        context.user_data['awaiting'] = 'def_add_name'
         await query.edit_message_text(
-            "📝 *Default Name* (sob account e apply hobe)\n\nType the name now:",
+            "📝 *Add Name to Pool*\n\nEk line e ekta name pathao — ek sathe onek o pathate paro:\n\n"
+            "Example:\n`Rahul`\n`Suraj`\n`Amit Kumar`\n\n"
+            "Ei name gulo order onujayi account e lagbe (1st name → 1st account...)",
             parse_mode='Markdown', reply_markup=BACK_KB
         )
+
+    elif query.data == 'def_del_name':
+        names = get_default_profile().get('names', [])
+        if not names:
+            kb = [[InlineKeyboardButton("🔙 Back", callback_data='profdefault')]]
+            await query.edit_message_text("❌ Kono name nei!", reply_markup=InlineKeyboardMarkup(kb))
+            return
+        keyboard = []
+        for i, n in enumerate(names):
+            keyboard.append([InlineKeyboardButton(f"🗑 {i+1}. {n[:25]}", callback_data=f"def_delname_{i}")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='profdefault')])
+        await query.edit_message_text("🗑 *Kon name delete korbe?*", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data.startswith('def_delname_'):
+        idx = int(query.data.replace('def_delname_', ''))
+        cfg = get_default_profile()
+        names = cfg.get('names', [])
+        if 0 <= idx < len(names):
+            removed = names.pop(idx)
+            cfg['names'] = names
+            save_default_profile(cfg)
+            kb = [[InlineKeyboardButton("🔙 Back", callback_data='profdefault')]]
+            await query.edit_message_text(f"✅ Deleted: `{removed}`\nRemaining names: {len(names)}",
+                                          parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+
+    elif query.data == 'def_add_photo':
+        context.user_data['awaiting'] = 'def_add_photo'
+        photos = get_default_profile().get('photos', [])
+        await query.edit_message_text(
+            f"🖼 *Add Logo/Photo to Pool*\n(Already {len(photos)} logo in pool)\n\n"
+            "Send the photo now (as photo, not file). Ekta ekta kore pathao:",
+            parse_mode='Markdown', reply_markup=BACK_KB
+        )
+
+    elif query.data == 'def_del_photo':
+        photos = get_default_profile().get('photos', [])
+        if not photos:
+            kb = [[InlineKeyboardButton("🔙 Back", callback_data='profdefault')]]
+            await query.edit_message_text("❌ Kono logo nei!", reply_markup=InlineKeyboardMarkup(kb))
+            return
+        keyboard = []
+        for i in range(len(photos)):
+            keyboard.append([InlineKeyboardButton(f"🗑 Logo #{i+1}", callback_data=f"def_delphoto_{i}")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='profdefault')])
+        await query.edit_message_text("🗑 *Kon logo delete korbe?*", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data.startswith('def_delphoto_'):
+        idx = int(query.data.replace('def_delphoto_', ''))
+        cfg = get_default_profile()
+        photos = cfg.get('photos', [])
+        if 0 <= idx < len(photos):
+            photos.pop(idx)
+            cfg['photos'] = photos
+            save_default_profile(cfg)
+            kb = [[InlineKeyboardButton("🔙 Back", callback_data='profdefault')]]
+            await query.edit_message_text(f"✅ Logo deleted!\nRemaining logos: {len(photos)}",
+                                          reply_markup=InlineKeyboardMarkup(kb))
 
     elif query.data == 'def_bio':
         context.user_data['awaiting'] = 'def_bio'
         await query.edit_message_text(
             "📄 *Default Bio* (sob account e apply hobe)\n\nType the bio now:",
-            parse_mode='Markdown', reply_markup=BACK_KB
-        )
-
-    elif query.data == 'def_photo':
-        context.user_data['awaiting'] = 'def_photo'
-        await query.edit_message_text(
-            "🖼 *Default Photo/Logo* (sob account e apply hobe)\n\nSend the photo now (as photo, not file):",
             parse_mode='Markdown', reply_markup=BACK_KB
         )
 
@@ -1023,134 +1064,54 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += "Currently: none"
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=BACK_KB)
 
-    # ── 🎨 CUSTOMIZE (per account) ──
-    elif query.data == 'profcustom_menu':
-        accs = get_all_accounts(uid)
-        if not accs:
-            kb = [[InlineKeyboardButton("🔙 Back", callback_data='profile_setup')]]
-            await query.edit_message_text("❌ No accounts!", reply_markup=InlineKeyboardMarkup(kb))
-            return
-        profiles = load_profiles()
-        keyboard = []
-        for i, acc in enumerate(accs, 1):
-            custom = profiles.get(acc['id'], {})
-            has = "🟢" if not profile_is_empty(custom) else "⚪"
-            keyboard.append([InlineKeyboardButton(
-                f"{has} #{i} {acc.get('name', acc['id'])[:20]}",
-                callback_data=f"profacc_{acc['id']}"
-            )])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='profile_setup')])
-        await query.edit_message_text(
-            "🎨 *Customize Profiles*\n\n"
-            "Prottek account er (#1, #2, #3...) alada name/photo/bio/channel link set koro.\n\n"
-            "🟢 = custom set ache (1-Click e eitai apply hobe)\n"
-            "⚪ = custom nei (1-Click e Default apply hobe)\n\n"
-            "Account select koro:",
-            parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+    elif query.data == 'def_reset':
+        save_default_profile({})
+        kb = [[InlineKeyboardButton("🔙 Back", callback_data='profile_setup')]]
+        await query.edit_message_text("♻️ Default Profile reset! Sob muchhe geche.",
+                                      reply_markup=InlineKeyboardMarkup(kb))
 
-    elif query.data.startswith('profacc_'):
-        acc_id = query.data[len('profacc_'):]
-        if not any(a['id'] == acc_id for a in get_all_accounts(uid)):
-            await query.edit_message_text("⛔ Not your account!")
-            return
-        cfg = get_profile(acc_id)
-        channels = cfg.get('channels', [])
-        text = (
-            f"🎨 *Custom Profile* (ei account er jonno)\n\n"
-            f"📝 Name: `{cfg.get('name', '—')}`\n"
-            f"📄 Bio: `{cfg.get('bio', '—')}`\n"
-            f"🖼 Photo: {'✅ Set' if cfg.get('photo') else '—'}\n"
-            f"📢 Channels/Groups ({len(channels)}):\n"
-        )
-        for ch in channels:
-            text += f"  • `{ch}`\n"
-        keyboard = [
-            [InlineKeyboardButton("📝 Set Name", callback_data=f"profname_{acc_id}")],
-            [InlineKeyboardButton("🖼 Set Photo", callback_data=f"profphoto_{acc_id}")],
-            [InlineKeyboardButton("📄 Set Bio", callback_data=f"profbio_{acc_id}")],
-            [InlineKeyboardButton("📢 Set Channels/Groups", callback_data=f"profchan_{acc_id}")],
-            [InlineKeyboardButton("🔙 Back", callback_data='profcustom_menu')],
-        ]
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
-
-    elif query.data.startswith('profname_'):
-        acc_id = query.data[len('profname_'):]
-        context.user_data['awaiting'] = f'prof_name:{acc_id}'
-        await query.edit_message_text(
-            "📝 *Set Name* (ei account er jonno)\n\nType the new name now:",
-            parse_mode='Markdown', reply_markup=BACK_KB
-        )
-
-    elif query.data.startswith('profbio_'):
-        acc_id = query.data[len('profbio_'):]
-        context.user_data['awaiting'] = f'prof_bio:{acc_id}'
-        await query.edit_message_text(
-            "📄 *Set Bio* (ei account er jonno)\n\nType the new bio now:",
-            parse_mode='Markdown', reply_markup=BACK_KB
-        )
-
-    elif query.data.startswith('profphoto_'):
-        acc_id = query.data[len('profphoto_'):]
-        context.user_data['awaiting'] = f'prof_photo:{acc_id}'
-        await query.edit_message_text(
-            "🖼 *Set Photo (Logo)* (ei account er jonno)\n\nSend the photo now (as photo, not file):",
-            parse_mode='Markdown', reply_markup=BACK_KB
-        )
-
-    elif query.data.startswith('profchan_'):
-        acc_id = query.data[len('profchan_'):]
-        context.user_data['awaiting'] = f'prof_chan:{acc_id}'
-        cfg = get_profile(acc_id)
-        saved = cfg.get('channels', [])
-        text = (
-            "📢 *Set Channels/Groups* (ei account er jonno)\n\n"
-            "Link gulo pathao — ek line e ekta link, or comma diye alada koro.\n\n"
-            "Examples:\n"
-            "`@mychannel`\n"
-            "`https://t.me/mygroup`\n"
-            "`https://t.me/+AbCdEf123` (private invite)\n\n"
-        )
-        if saved:
-            text += "Currently saved:\n" + "\n".join(f"• `{c}`" for c in saved)
-        else:
-            text += "Currently: none"
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=BACK_KB)
-
-    # ── ⚡ 1-CLICK APPLY ALL ──
+    # ── ⚡ 1-CLICK APPLY ALL (pool onujayi distribute) ──
     elif query.data == 'profapply_all':
         accs = get_all_accounts(uid)
         if not accs:
             kb = [[InlineKeyboardButton("🔙 Back", callback_data='profile_setup')]]
             await query.edit_message_text("❌ No accounts!", reply_markup=InlineKeyboardMarkup(kb))
             return
-        default_cfg = get_default_profile()
-        if profile_is_empty(default_cfg) and all(profile_is_empty(get_profile(a['id'])) for a in accs):
+        cfg = get_default_profile()
+        names = cfg.get('names', [])
+        photos = cfg.get('photos', [])
+        bio = cfg.get('bio', '')
+        channels = cfg.get('channels', [])
+
+        if not names and not photos and not bio and not channels:
             kb = [[InlineKeyboardButton("🔙 Back", callback_data='profile_setup')]]
             await query.edit_message_text(
                 "❌ Kono profile config set kora nei!\n"
-                "Age ⚙️ Default Profile or 🎨 Customize theke set koro.",
+                "Age ⚙️ Default Profile e Name/Logo/Bio/Channels set koro.",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
             return
+
         await query.edit_message_text(
             f"⏳ Applying profiles to {len(accs)} account(s)...\n"
-            f"Ekhon ektu somoy lagbe (name, photo, bio, channel join)..."
+            f"Ekhon ektu somoy lagbe (name, logo, bio, channel join)..."
         )
         report = []
-        for i, acc in enumerate(accs, 1):
-            cfg = get_effective_profile(acc['id'])
-            if profile_is_empty(cfg):
-                report.append(f"#{i} {acc.get('name', acc['id'])}: ⏭️ no config, skipped")
-                continue
-            acc_name = acc.get('name', acc['id'])
+        for i, acc in enumerate(accs):
+            # 🔥 ORDER-BASED DISTRIBUTION: 1st name/logo → 1st account, 2nd → 2nd...
+            acc_name = names[i % len(names)] if names else ''
+            acc_photo = photos[i % len(photos)] if photos else None
+            acc_label = acc.get('name', acc['id'])
+            assigned = f"'{acc_name}'" if acc_name else "(no name)"
+            if acc_photo:
+                assigned += f" + Logo#{(i % len(photos)) + 1}"
             try:
-                results = await apply_profile(acc, cfg, bot=context.bot)
+                results = await apply_profile(acc, acc_name, acc_photo, bio, channels, bot=context.bot)
                 ok = sum(1 for r in results if r.startswith('✅'))
                 fail = sum(1 for r in results if r.startswith('❌'))
-                report.append(f"#{i} {acc_name}: ✅{ok} ❌{fail}")
+                report.append(f"#{i+1} {acc_label} → {assigned}: ✅{ok} ❌{fail}")
             except Exception as e:
-                report.append(f"#{i} {acc_name}: ❌ {str(e)[:50]}")
+                report.append(f"#{i+1} {acc_label} → {assigned}: ❌ {str(e)[:50]}")
             await asyncio.sleep(2)
         kb = [
             [InlineKeyboardButton("🎨 Profile Menu", callback_data='profile_setup')],
@@ -1251,7 +1212,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = "ON — unauthorized users see a notice" if SHOW_START_TO_OTHERS else "OFF — unauthorized users see NOTHING"
         await query.edit_message_text(f"👻 Start-msg: {state}", reply_markup=InlineKeyboardMarkup(kb))
 
-    # ===== SETTINGS — OWNER ONLY (Status ekhon ekhane) =====
+    # ===== SETTINGS — OWNER ONLY =====
     elif query.data == 'settings':
         if not is_owner(uid):
             return
@@ -1372,7 +1333,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown', reply_markup=BACK_KB
         )
 
-    # ===== DELETE ACCOUNT (own only) — Delete ALL ekhon ekhane =====
+    # ===== DELETE ACCOUNT (own only) — Delete ALL ekhane =====
     elif query.data == 'delete_account':
         all_accs = get_all_accounts(uid)
         if not all_accs:
@@ -1453,35 +1414,32 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ===== BACK MAIN =====
     elif query.data == 'back_main':
-        context.user_data['awaiting'] = None   # clear any pending input
+        context.user_data['awaiting'] = None
         refresh_account_stats(uid)
         await query.edit_message_text(main_menu_text(uid), parse_mode='Markdown', reply_markup=main_menu_keyboard(uid))
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🖼 Receives profile photo for Default or Custom profile."""
+    """🖼 Receives logo/photo for the Default Profile pool."""
     uid = update.effective_user.id
     if not (is_owner(uid) or is_valid_admin(uid)):
         return
     awaiting = context.user_data.get('awaiting')
-    if awaiting == 'def_photo':
+    if awaiting == 'def_add_photo':
         file_id = update.message.photo[-1].file_id
-        set_profile_key(DEFAULT_PROFILE_KEY, 'photo', file_id)
+        cfg = get_default_profile()
+        photos = cfg.get('photos', [])
+        photos.append(file_id)
+        cfg['photos'] = photos
+        save_default_profile(cfg)
         context.user_data['awaiting'] = None
         kb = [[InlineKeyboardButton("⚙️ Default Profile", callback_data='profdefault')]]
-        await update.message.reply_text("✅ Default photo saved! 1-Click Apply All e sob account e lagbe.",
-                                        reply_markup=InlineKeyboardMarkup(kb))
-    elif awaiting and awaiting.startswith('prof_photo:'):
-        acc_id = awaiting.split(':', 1)[1]
-        context.user_data['awaiting'] = None
-        if not any(a['id'] == acc_id for a in get_all_accounts(uid)):
-            await update.message.reply_text("⛔ Not your account!")
-            return
-        file_id = update.message.photo[-1].file_id
-        set_profile_key(acc_id, 'photo', file_id)
-        kb = [[InlineKeyboardButton("🎨 Profile Menu", callback_data=f"profacc_{acc_id}")]]
-        await update.message.reply_text("✅ Photo saved! 1 click e apply korte paro.",
-                                        reply_markup=InlineKeyboardMarkup(kb))
+        await update.message.reply_text(
+            f"✅ Logo #{len(photos)} saved!\n\n"
+            f"🖼 Total logos in pool: {len(photos)}\n"
+            f"Aro logo add korte chaile abar Add Logo tap koro.",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1563,18 +1521,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ══════════ 🎨 PROFILE INPUTS — DEFAULT ══════════
-    if awaiting == 'def_name':
+    # ══════════ 🎨 DEFAULT PROFILE INPUTS ══════════
+    if awaiting == 'def_add_name':
         context.user_data['awaiting'] = None
-        set_profile_key(DEFAULT_PROFILE_KEY, 'name', text)
+        cfg = get_default_profile()
+        names = cfg.get('names', [])
+        new_names = [n.strip() for n in text.split('\n') if n.strip()]
+        names.extend(new_names)
+        cfg['names'] = names
+        save_default_profile(cfg)
         kb = [[InlineKeyboardButton("⚙️ Default Profile", callback_data='profdefault')]]
-        await update.message.reply_text(f"✅ Default Name saved: `{text}`", parse_mode='Markdown',
-                                        reply_markup=InlineKeyboardMarkup(kb))
+        await update.message.reply_text(
+            f"✅ {len(new_names)} name added to pool!\n\n" +
+            "\n".join(f"{len(names)-len(new_names)+i+1}. `{n}`" for i, n in enumerate(new_names)) +
+            f"\n\n📝 Total names: {len(names)}\n"
+            f"(1st name → 1st account, 2nd → 2nd account...)",
+            parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb)
+        )
         return
 
     if awaiting == 'def_bio':
         context.user_data['awaiting'] = None
-        set_profile_key(DEFAULT_PROFILE_KEY, 'bio', text)
+        cfg = get_default_profile()
+        cfg['bio'] = text
+        save_default_profile(cfg)
         kb = [[InlineKeyboardButton("⚙️ Default Profile", callback_data='profdefault')]]
         await update.message.reply_text(f"✅ Default Bio saved: `{text[:50]}`", parse_mode='Markdown',
                                         reply_markup=InlineKeyboardMarkup(kb))
@@ -1583,51 +1553,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if awaiting == 'def_chan':
         context.user_data['awaiting'] = None
         links = [x.strip() for x in re.split(r'[\n,]+', text) if x.strip()]
-        set_profile_key(DEFAULT_PROFILE_KEY, 'channels', links)
+        cfg = get_default_profile()
+        cfg['channels'] = links
+        save_default_profile(cfg)
         kb = [[InlineKeyboardButton("⚙️ Default Profile", callback_data='profdefault')]]
         await update.message.reply_text(
             f"✅ {len(links)} channel/group link saved (Default)!\n\n" +
-            "\n".join(f"• `{l}`" for l in links),
-            parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb)
-        )
-        return
-
-    # ══════════ 🎨 PROFILE INPUTS — CUSTOM (per account) ══════════
-    if awaiting and awaiting.startswith('prof_name:'):
-        acc_id = awaiting.split(':', 1)[1]
-        context.user_data['awaiting'] = None
-        if not any(a['id'] == acc_id for a in get_all_accounts(uid)):
-            await update.message.reply_text("⛔ Not your account!")
-            return
-        set_profile_key(acc_id, 'name', text)
-        kb = [[InlineKeyboardButton("🎨 Profile Menu", callback_data=f"profacc_{acc_id}")]]
-        await update.message.reply_text(f"✅ Name saved: `{text}`", parse_mode='Markdown',
-                                        reply_markup=InlineKeyboardMarkup(kb))
-        return
-
-    if awaiting and awaiting.startswith('prof_bio:'):
-        acc_id = awaiting.split(':', 1)[1]
-        context.user_data['awaiting'] = None
-        if not any(a['id'] == acc_id for a in get_all_accounts(uid)):
-            await update.message.reply_text("⛔ Not your account!")
-            return
-        set_profile_key(acc_id, 'bio', text)
-        kb = [[InlineKeyboardButton("🎨 Profile Menu", callback_data=f"profacc_{acc_id}")]]
-        await update.message.reply_text(f"✅ Bio saved: `{text[:50]}`", parse_mode='Markdown',
-                                        reply_markup=InlineKeyboardMarkup(kb))
-        return
-
-    if awaiting and awaiting.startswith('prof_chan:'):
-        acc_id = awaiting.split(':', 1)[1]
-        context.user_data['awaiting'] = None
-        if not any(a['id'] == acc_id for a in get_all_accounts(uid)):
-            await update.message.reply_text("⛔ Not your account!")
-            return
-        links = [x.strip() for x in re.split(r'[\n,]+', text) if x.strip()]
-        set_profile_key(acc_id, 'channels', links)
-        kb = [[InlineKeyboardButton("🎨 Profile Menu", callback_data=f"profacc_{acc_id}")]]
-        await update.message.reply_text(
-            f"✅ {len(links)} channel/group link saved!\n\n" +
             "\n".join(f"• `{l}`" for l in links),
             parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb)
         )
@@ -1714,7 +1645,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await client.disconnect()
 
             auth_sessions = load_auth_sessions()
-            new_id = gen_unique_id("phone", state['owner_id'])   # 🔥 unique ID fix
+            new_id = gen_unique_id("phone", state['owner_id'])
             auth_sessions.append({
                 'id': new_id, 'name': me.first_name or f"User{me.id}",
                 'api_id': state['api_id'], 'api_hash': state['api_hash'],
@@ -1774,7 +1705,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await client.disconnect()
 
             auth_sessions = load_auth_sessions()
-            new_id = gen_unique_id("phone", state['owner_id'])   # 🔥 unique ID fix
+            new_id = gen_unique_id("phone", state['owner_id'])
             auth_sessions.append({
                 'id': new_id, 'name': me.first_name or f"User{me.id}",
                 'api_id': state['api_id'], 'api_hash': state['api_hash'],
@@ -1881,7 +1812,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     global SHOW_START_TO_OTHERS
     print("=" * 50, flush=True)
-    print("🤖 BOT v4.3 STARTING", flush=True)
+    print("🤖 BOT v4.4 STARTING", flush=True)
     print("=" * 50, flush=True)
 
     await init_env_accounts()
