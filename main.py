@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-📱 ADVANCED TELEGRAM MASS MESSAGING BOT v4.2
+📱 ADVANCED TELEGRAM MASS MESSAGING BOT v4.3
 ✅ ADMIN SYSTEM (owner-controlled, custom expiry time, auto-stop on expiry)
 ✅ Flexible time format ('1 day 10 min', '2d 5h', '45m', 'perm')
 ✅ Admin time EXTENDS (adds to remaining time)
 ✅ Fixed: account delete bug (unique IDs — no more wrong account deleted!)
 ✅ Fixed: dead-session now notifies owner instead of failing silently
-✅ NEW: 🎨 Profile Setup (name+photo+bio+channels per account, 1-click apply)
-✅ NEW: 🗑 Delete All Accounts (with confirm)
-✅ Menu: Account List & Message List buttons removed (features still in Settings)
+✅ Status moved inside Settings
+✅ Delete ALL moved inside Delete Account menu
+✅ NEW: 🎨 Profile Setup → Default (all accounts) + Customize (per account) + 1-Click Apply All
 ✅ Back buttons on all prompts
 """
 
@@ -25,10 +25,6 @@ import uuid
 from datetime import datetime, timedelta
 from telethon import TelegramClient, errors, functions
 from telethon.sessions import StringSession
-# ❌ AGE EROKOM CHILO:
-# from telethon.tl.functions.account import UpdateProfileRequest, UploadProfilePhotoRequest
-
-# ✅ EKHON EIROKOM KORO:
 from telethon.tl.functions.account import UpdateProfileRequest
 from telethon.tl.functions.photos import UploadProfilePhotoRequest
 from telethon.errors import (
@@ -57,7 +53,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 60, flush=True)
-print("🤖 MESSAGING BOT v4.2 — PROFILE SETUP + FIXES", flush=True)
+print("🤖 MESSAGING BOT v4.3 — PROFILE SETUP + FIXES", flush=True)
 print("=" * 60, flush=True)
 
 # ══════════ ENVIRONMENT ══════════
@@ -81,6 +77,7 @@ DYNAMIC_ACCOUNTS_FILE = "dynamic_accounts.json"
 AUTH_SESSIONS_FILE = "auth_sessions.json"
 ADMINS_FILE = "admins.json"
 PROFILE_FILE = "profile_configs.json"
+DEFAULT_PROFILE_KEY = "__default__"
 
 MESSAGE = os.environ.get("MESSAGE", "𝟭𝟬 𝗠𝗜𝗡 𝗩𝗖 ₹𝟰𝟱 𝗕𝗔𝗕𝗬😘")
 MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "6"))
@@ -242,7 +239,18 @@ def save_profiles(profiles):
         pass
 
 def get_profile(acc_id):
+    """Custom profile for a specific account ({} if none)."""
     return load_profiles().get(acc_id, {})
+
+def get_default_profile():
+    return load_profiles().get(DEFAULT_PROFILE_KEY, {})
+
+def get_effective_profile(acc_id):
+    """Custom thakle custom, na thakle Default profile."""
+    custom = get_profile(acc_id)
+    if custom and (custom.get('name') or custom.get('bio') or custom.get('photo') or custom.get('channels')):
+        return custom
+    return get_default_profile()
 
 def set_profile_key(acc_id, key, value):
     profiles = load_profiles()
@@ -254,6 +262,9 @@ def clear_profile(acc_id):
     if acc_id in profiles:
         del profiles[acc_id]
         save_profiles(profiles)
+
+def profile_is_empty(cfg):
+    return not (cfg.get('name') or cfg.get('bio') or cfg.get('photo') or cfg.get('channels'))
 
 # ══════════ FILE HELPERS ══════════
 def load_auth_sessions():
@@ -386,7 +397,7 @@ def home():
     running_count = sum(1 for acc in all_accs if account_stats.get(acc['id'], {}).get('running', False))
     total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
     admin_count = len(load_admins())
-    return f"✅ Bot v4.2 | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Sent: {total_sent} | Admins: {admin_count}"
+    return f"✅ Bot v4.3 | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Sent: {total_sent} | Admins: {admin_count}"
 
 @web_app.route("/health")
 def health():
@@ -540,7 +551,7 @@ async def join_link(client, link):
         await client(functions.channels.JoinChannelRequest(username))
 
 async def apply_profile(acc, cfg, bot=None):
-    """🎨 1-click: apply name + photo + bio + join all saved channels/groups."""
+    """🎨 Apply name + photo + bio + join all saved channels/groups to one account."""
     results = []
     acc_id = acc['id']
     client = await get_client(acc)
@@ -616,8 +627,7 @@ async def run_account_messaging(acc, owner_user_id):
             await notify_user(owner_user_id,
                 f"🚨 *SESSION DEAD!*\n👤 {acc_name}\n\n"
                 f"❌ Eta account ta delete kore abar 📱 Phone Login diye login koro.\n"
-                f"(Same session onno jaygay cholche kina check o koro!)",
-                )
+                f"(Same session onno jaygay cholche kina check o koro!)")
             stop_account(acc_id)
             return
 
@@ -743,7 +753,6 @@ async def run_account_messaging(acc, owner_user_id):
         logger.info(f"[{acc_name}] Stopped")
     except Exception as e:
         logger.error(f"[{acc_name}] Fatal: {e}")
-        # 🔧 FIX: tell the user WHY messages weren't sending
         await notify_user(owner_user_id, f"❌ *{acc_name}* fatal error:\n`{str(e)[:150]}`")
     finally:
         await disconnect_client(acc_id)
@@ -812,12 +821,10 @@ def main_menu_keyboard(user_id):
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("▶️ Start All", callback_data='start_all'),
              InlineKeyboardButton("⏹️ Stop All", callback_data='stop_all')],
-            [InlineKeyboardButton("📊 Status", callback_data='status')],
             [InlineKeyboardButton("⚙️ Settings", callback_data='settings')],
-            [InlineKeyboardButton("➕ Add Session", callback_data='add_account'),
-             InlineKeyboardButton("📱 Phone Login", callback_data='phone_login')],
+            [InlineKeyboardButton("➕ Add Session", callback_data='add_account')],
+            [InlineKeyboardButton("📱 Phone Login", callback_data='phone_login')],
             [InlineKeyboardButton("🗑 Delete Account", callback_data='delete_account')],
-            [InlineKeyboardButton("🗑 Delete ALL Accounts", callback_data='del_all_accounts')],
             [InlineKeyboardButton("🎨 Profile Setup", callback_data='profile_setup')],
             [InlineKeyboardButton("👑 Admin Panel", callback_data='admin_panel')],
         ])
@@ -826,10 +833,9 @@ def main_menu_keyboard(user_id):
             [InlineKeyboardButton("▶️ Start All", callback_data='start_all'),
              InlineKeyboardButton("⏹️ Stop All", callback_data='stop_all')],
             [InlineKeyboardButton("📊 Status", callback_data='status')],
-            [InlineKeyboardButton("➕ Add Session", callback_data='add_account'),
-             InlineKeyboardButton("📱 Phone Login", callback_data='phone_login')],
+            [InlineKeyboardButton("➕ Add Session", callback_data='add_account')],
+            [InlineKeyboardButton("📱 Phone Login", callback_data='phone_login')],
             [InlineKeyboardButton("🗑 Delete Account", callback_data='delete_account')],
-            [InlineKeyboardButton("🗑 Delete ALL Accounts", callback_data='del_all_accounts')],
             [InlineKeyboardButton("🎨 Profile Setup", callback_data='profile_setup')],
         ])
 
@@ -844,7 +850,7 @@ def main_menu_text(user_id):
         a = get_admin(user_id)
         expiry = f"\n⏳ Admin time: {remaining_time_str(a.get('expires_at') if a else None)}"
     return (
-        f"🤖 *Messaging Bot v4.2*\n"
+        f"🤖 *Messaging Bot v4.3*\n"
         f"👤 Role: {role}{expiry}\n\n"
         f"📊 Accounts: {total} (Running: {running})\n"
         f"⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | Cycle {CYCLE_WAIT}s\n"
@@ -932,75 +938,37 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = [[InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
 
-    # ══════════ 🗑 DELETE ALL ACCOUNTS ══════════
-    elif query.data == 'del_all_accounts':
-        accs = get_all_accounts(uid)
-        deletable = [a for a in accs if a.get('type') != 'env']
-        text = (
-            f"⚠️ *DELETE ALL ACCOUNTS?*\n\n"
-            f"📊 Total: {len(accs)} | Will delete: {len(deletable)}\n"
-            f"(💚 Env accounts can't be deleted — they come back on restart)\n\n"
-            f"❗ This is PERMANENT. Sessions will be gone forever!"
-        )
-        kb = [
-            [InlineKeyboardButton("☠️ YES, DELETE ALL", callback_data='del_all_confirm')],
-            [InlineKeyboardButton("🔙 Back", callback_data='back_main')],
-        ]
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
-
-    elif query.data == 'del_all_confirm':
-        accs = get_all_accounts(uid)
-        count = 0
-        for acc in accs:
-            if acc.get('type') == 'env':
-                continue   # env accounts come from env vars, can't permanently delete
-            acc_id = acc['id']
-            stop_account(acc_id)
-            remove_account_by_id(acc_id)
-            await disconnect_client(acc_id)
-            count += 1
-        save_data()
-        kb = [[InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
-        await query.edit_message_text(
-            f"✅ {count} accounts deleted!\nAll sessions removed permanently.",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-
-    # ══════════ 🎨 PROFILE SETUP ══════════
+    # ══════════ 🎨 PROFILE SETUP MAIN MENU ══════════
     elif query.data == 'profile_setup':
         accs = get_all_accounts(uid)
         if not accs:
             kb = [[InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
             await query.edit_message_text("❌ No accounts! Add one first.", reply_markup=InlineKeyboardMarkup(kb))
             return
-        profiles = load_profiles()
-        keyboard = []
-        for i, acc in enumerate(accs, 1):
-            has = "🟢" if profiles.get(acc['id']) else "⚪"
-            keyboard.append([InlineKeyboardButton(
-                f"{has} #{i} {acc.get('name', acc['id'])[:20]}",
-                callback_data=f"profacc_{acc['id']}"
-            )])
-        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='back_main')])
+        dflt = get_default_profile()
+        dflt_state = "🟢 set" if not profile_is_empty(dflt) else "⚪ empty"
+        keyboard = [
+            [InlineKeyboardButton(f"⚙️ Default Profile ({dflt_state})", callback_data='profdefault')],
+            [InlineKeyboardButton("🎨 Customize (per account alada)", callback_data='profcustom_menu')],
+            [InlineKeyboardButton("⚡ 1-CLICK APPLY ALL", callback_data='profapply_all')],
+            [InlineKeyboardButton("🔙 Back", callback_data='back_main')],
+        ]
         await query.edit_message_text(
             "🎨 *Profile Setup*\n\n"
-            "Prottek account er (#1, #2, #3...) alada Name + Logo + Bio + "
-            "Channel/Group link set korte parba. 1 click e apply hobe!\n\n"
-            "🟢 = config saved | ⚪ = not set yet\n\n"
-            "Account select koro:",
+            "⚙️ **Default Profile** — ekta name+photo+bio+link set koro, SOB account er jonno.\n\n"
+            "🎨 **Customize** — proti account er (#1, #2, #3...) alada name/photo/bio/link set koro.\n"
+            "Custom set thakle 1-Click e custom apply hobe, na thakle Default apply hobe.\n\n"
+            "⚡ **1-CLICK APPLY ALL** — bot e login thaka SOB account er nam, logo, bio, "
+            "channel link ek sathe change hoye jabe!",
             parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    elif query.data.startswith('profacc_'):
-        acc_id = query.data[len('profacc_'):]
-        # 🔒 ownership check
-        if not any(a['id'] == acc_id for a in get_all_accounts(uid)):
-            await query.edit_message_text("⛔ Not your account!")
-            return
-        cfg = get_profile(acc_id)
+    # ── ⚙️ DEFAULT PROFILE ──
+    elif query.data == 'profdefault':
+        cfg = get_default_profile()
         channels = cfg.get('channels', [])
         text = (
-            f"🎨 *Profile Setup*\n\n"
+            f"⚙️ *Default Profile* (sob account er jonno)\n\n"
             f"📝 Name: `{cfg.get('name', '—')}`\n"
             f"📄 Bio: `{cfg.get('bio', '—')}`\n"
             f"🖼 Photo: {'✅ Set' if cfg.get('photo') else '—'}\n"
@@ -1009,46 +977,40 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for ch in channels:
             text += f"  • `{ch}`\n"
         keyboard = [
-            [InlineKeyboardButton("⚡ APPLY ALL (1 Click)", callback_data=f"profapply_{acc_id}")],
-            [InlineKeyboardButton("📝 Set Name", callback_data=f"profname_{acc_id}")],
-            [InlineKeyboardButton("🖼 Set Photo", callback_data=f"profphoto_{acc_id}")],
-            [InlineKeyboardButton("📄 Set Bio", callback_data=f"profbio_{acc_id}")],
-            [InlineKeyboardButton("📢 Set Channels/Groups", callback_data=f"profchan_{acc_id}")],
+            [InlineKeyboardButton("📝 Set Name", callback_data='def_name')],
+            [InlineKeyboardButton("🖼 Set Photo", callback_data='def_photo')],
+            [InlineKeyboardButton("📄 Set Bio", callback_data='def_bio')],
+            [InlineKeyboardButton("📢 Set Channels/Groups", callback_data='def_chan')],
             [InlineKeyboardButton("🔙 Back", callback_data='profile_setup')],
         ]
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif query.data.startswith('profname_'):
-        acc_id = query.data[len('profname_'):]
-        context.user_data['awaiting'] = f'prof_name:{acc_id}'
+    elif query.data == 'def_name':
+        context.user_data['awaiting'] = 'def_name'
         await query.edit_message_text(
-            "📝 *Set Name*\n\nType the new name now:",
+            "📝 *Default Name* (sob account e apply hobe)\n\nType the name now:",
             parse_mode='Markdown', reply_markup=BACK_KB
         )
 
-    elif query.data.startswith('profbio_'):
-        acc_id = query.data[len('profbio_'):]
-        context.user_data['awaiting'] = f'prof_bio:{acc_id}'
+    elif query.data == 'def_bio':
+        context.user_data['awaiting'] = 'def_bio'
         await query.edit_message_text(
-            "📄 *Set Bio*\n\nType the new bio now:",
+            "📄 *Default Bio* (sob account e apply hobe)\n\nType the bio now:",
             parse_mode='Markdown', reply_markup=BACK_KB
         )
 
-    elif query.data.startswith('profphoto_'):
-        acc_id = query.data[len('profphoto_'):]
-        context.user_data['awaiting'] = f'prof_photo:{acc_id}'
+    elif query.data == 'def_photo':
+        context.user_data['awaiting'] = 'def_photo'
         await query.edit_message_text(
-            "🖼 *Set Photo (Logo)*\n\nSend the photo now (as photo, not file):",
+            "🖼 *Default Photo/Logo* (sob account e apply hobe)\n\nSend the photo now (as photo, not file):",
             parse_mode='Markdown', reply_markup=BACK_KB
         )
 
-    elif query.data.startswith('profchan_'):
-        acc_id = query.data[len('profchan_'):]
-        context.user_data['awaiting'] = f'prof_chan:{acc_id}'
-        cfg = get_profile(acc_id)
-        saved = cfg.get('channels', [])
+    elif query.data == 'def_chan':
+        context.user_data['awaiting'] = 'def_chan'
+        saved = get_default_profile().get('channels', [])
         text = (
-            "📢 *Set Channels/Groups*\n\n"
+            "📢 *Default Channels/Groups* (sob account join korbe)\n\n"
             "Link gulo pathao — ek line e ekta link, or comma diye alada koro.\n\n"
             "Examples:\n"
             "`@mychannel`\n"
@@ -1061,26 +1023,141 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += "Currently: none"
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=BACK_KB)
 
-    elif query.data.startswith('profapply_'):
-        acc_id = query.data[len('profapply_'):]
-        acc = next((a for a in get_all_accounts(uid) if a['id'] == acc_id), None)
-        if acc is None:
+    # ── 🎨 CUSTOMIZE (per account) ──
+    elif query.data == 'profcustom_menu':
+        accs = get_all_accounts(uid)
+        if not accs:
+            kb = [[InlineKeyboardButton("🔙 Back", callback_data='profile_setup')]]
+            await query.edit_message_text("❌ No accounts!", reply_markup=InlineKeyboardMarkup(kb))
+            return
+        profiles = load_profiles()
+        keyboard = []
+        for i, acc in enumerate(accs, 1):
+            custom = profiles.get(acc['id'], {})
+            has = "🟢" if not profile_is_empty(custom) else "⚪"
+            keyboard.append([InlineKeyboardButton(
+                f"{has} #{i} {acc.get('name', acc['id'])[:20]}",
+                callback_data=f"profacc_{acc['id']}"
+            )])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='profile_setup')])
+        await query.edit_message_text(
+            "🎨 *Customize Profiles*\n\n"
+            "Prottek account er (#1, #2, #3...) alada name/photo/bio/channel link set koro.\n\n"
+            "🟢 = custom set ache (1-Click e eitai apply hobe)\n"
+            "⚪ = custom nei (1-Click e Default apply hobe)\n\n"
+            "Account select koro:",
+            parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif query.data.startswith('profacc_'):
+        acc_id = query.data[len('profacc_'):]
+        if not any(a['id'] == acc_id for a in get_all_accounts(uid)):
             await query.edit_message_text("⛔ Not your account!")
             return
         cfg = get_profile(acc_id)
-        if not cfg:
-            kb = [[InlineKeyboardButton("🔙 Back", callback_data=f"profacc_{acc_id}")]]
-            await query.edit_message_text("❌ No profile config saved yet! Age Name/Photo/Bio/Channels set koro.",
-                                          reply_markup=InlineKeyboardMarkup(kb))
+        channels = cfg.get('channels', [])
+        text = (
+            f"🎨 *Custom Profile* (ei account er jonno)\n\n"
+            f"📝 Name: `{cfg.get('name', '—')}`\n"
+            f"📄 Bio: `{cfg.get('bio', '—')}`\n"
+            f"🖼 Photo: {'✅ Set' if cfg.get('photo') else '—'}\n"
+            f"📢 Channels/Groups ({len(channels)}):\n"
+        )
+        for ch in channels:
+            text += f"  • `{ch}`\n"
+        keyboard = [
+            [InlineKeyboardButton("📝 Set Name", callback_data=f"profname_{acc_id}")],
+            [InlineKeyboardButton("🖼 Set Photo", callback_data=f"profphoto_{acc_id}")],
+            [InlineKeyboardButton("📄 Set Bio", callback_data=f"profbio_{acc_id}")],
+            [InlineKeyboardButton("📢 Set Channels/Groups", callback_data=f"profchan_{acc_id}")],
+            [InlineKeyboardButton("🔙 Back", callback_data='profcustom_menu')],
+        ]
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif query.data.startswith('profname_'):
+        acc_id = query.data[len('profname_'):]
+        context.user_data['awaiting'] = f'prof_name:{acc_id}'
+        await query.edit_message_text(
+            "📝 *Set Name* (ei account er jonno)\n\nType the new name now:",
+            parse_mode='Markdown', reply_markup=BACK_KB
+        )
+
+    elif query.data.startswith('profbio_'):
+        acc_id = query.data[len('profbio_'):]
+        context.user_data['awaiting'] = f'prof_bio:{acc_id}'
+        await query.edit_message_text(
+            "📄 *Set Bio* (ei account er jonno)\n\nType the new bio now:",
+            parse_mode='Markdown', reply_markup=BACK_KB
+        )
+
+    elif query.data.startswith('profphoto_'):
+        acc_id = query.data[len('profphoto_'):]
+        context.user_data['awaiting'] = f'prof_photo:{acc_id}'
+        await query.edit_message_text(
+            "🖼 *Set Photo (Logo)* (ei account er jonno)\n\nSend the photo now (as photo, not file):",
+            parse_mode='Markdown', reply_markup=BACK_KB
+        )
+
+    elif query.data.startswith('profchan_'):
+        acc_id = query.data[len('profchan_'):]
+        context.user_data['awaiting'] = f'prof_chan:{acc_id}'
+        cfg = get_profile(acc_id)
+        saved = cfg.get('channels', [])
+        text = (
+            "📢 *Set Channels/Groups* (ei account er jonno)\n\n"
+            "Link gulo pathao — ek line e ekta link, or comma diye alada koro.\n\n"
+            "Examples:\n"
+            "`@mychannel`\n"
+            "`https://t.me/mygroup`\n"
+            "`https://t.me/+AbCdEf123` (private invite)\n\n"
+        )
+        if saved:
+            text += "Currently saved:\n" + "\n".join(f"• `{c}`" for c in saved)
+        else:
+            text += "Currently: none"
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=BACK_KB)
+
+    # ── ⚡ 1-CLICK APPLY ALL ──
+    elif query.data == 'profapply_all':
+        accs = get_all_accounts(uid)
+        if not accs:
+            kb = [[InlineKeyboardButton("🔙 Back", callback_data='profile_setup')]]
+            await query.edit_message_text("❌ No accounts!", reply_markup=InlineKeyboardMarkup(kb))
             return
-        await query.edit_message_text("⏳ Applying profile (name, photo, bio, joining channels)...")
-        results = await apply_profile(acc, cfg, bot=context.bot)
+        default_cfg = get_default_profile()
+        if profile_is_empty(default_cfg) and all(profile_is_empty(get_profile(a['id'])) for a in accs):
+            kb = [[InlineKeyboardButton("🔙 Back", callback_data='profile_setup')]]
+            await query.edit_message_text(
+                "❌ Kono profile config set kora nei!\n"
+                "Age ⚙️ Default Profile or 🎨 Customize theke set koro.",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+            return
+        await query.edit_message_text(
+            f"⏳ Applying profiles to {len(accs)} account(s)...\n"
+            f"Ekhon ektu somoy lagbe (name, photo, bio, channel join)..."
+        )
+        report = []
+        for i, acc in enumerate(accs, 1):
+            cfg = get_effective_profile(acc['id'])
+            if profile_is_empty(cfg):
+                report.append(f"#{i} {acc.get('name', acc['id'])}: ⏭️ no config, skipped")
+                continue
+            acc_name = acc.get('name', acc['id'])
+            try:
+                results = await apply_profile(acc, cfg, bot=context.bot)
+                ok = sum(1 for r in results if r.startswith('✅'))
+                fail = sum(1 for r in results if r.startswith('❌'))
+                report.append(f"#{i} {acc_name}: ✅{ok} ❌{fail}")
+            except Exception as e:
+                report.append(f"#{i} {acc_name}: ❌ {str(e)[:50]}")
+            await asyncio.sleep(2)
         kb = [
-            [InlineKeyboardButton("🎨 Profile Menu", callback_data=f"profacc_{acc_id}")],
-            [InlineKeyboardButton("🔙 Back", callback_data='profile_setup')],
+            [InlineKeyboardButton("🎨 Profile Menu", callback_data='profile_setup')],
+            [InlineKeyboardButton("🔙 Back", callback_data='back_main')],
         ]
         await query.edit_message_text(
-            f"🎨 *Profile Applied*\n\n" + "\n".join(results),
+            "⚡ *1-Click Apply ALL — Done!*\n\n" + "\n".join(report),
             parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb)
         )
 
@@ -1174,11 +1251,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = "ON — unauthorized users see a notice" if SHOW_START_TO_OTHERS else "OFF — unauthorized users see NOTHING"
         await query.edit_message_text(f"👻 Start-msg: {state}", reply_markup=InlineKeyboardMarkup(kb))
 
-    # ===== SETTINGS — OWNER ONLY =====
+    # ===== SETTINGS — OWNER ONLY (Status ekhon ekhane) =====
     elif query.data == 'settings':
         if not is_owner(uid):
             return
         keyboard = [
+            [InlineKeyboardButton("📊 Status", callback_data='status')],
             [InlineKeyboardButton("📝 Manage Messages", callback_data='message_list')],
             [InlineKeyboardButton("⏱️ Speed Settings", callback_data='edit_speed')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_main')],
@@ -1190,7 +1268,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-    # ===== MESSAGE LIST (accessible from Settings) =====
+    # ===== MESSAGE LIST =====
     elif query.data == 'message_list':
         msgs = load_messages_for(uid)
         text = f"📝 *Message List ({len(msgs)})*\n\n"
@@ -1294,7 +1372,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown', reply_markup=BACK_KB
         )
 
-    # ===== DELETE ACCOUNT (own only) =====
+    # ===== DELETE ACCOUNT (own only) — Delete ALL ekhon ekhane =====
     elif query.data == 'delete_account':
         all_accs = get_all_accounts(uid)
         if not all_accs:
@@ -1306,8 +1384,43 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             type_icon = {'env': '💚', 'dynamic': '💙', 'phone_auth': '📱'}.get(acc.get('type', ''), '❓')
             display = f"{type_icon} #{i} {acc.get('name', acc['id'])[:25]}"
             keyboard.append([InlineKeyboardButton(display, callback_data=f"del_acc_{acc['id']}")])
+        keyboard.append([InlineKeyboardButton("🗑 Delete ALL Accounts", callback_data='del_all_accounts')])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='back_main')])
         await query.edit_message_text("🗑 *Delete which account?*", reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # ══════════ 🗑 DELETE ALL ACCOUNTS ══════════
+    elif query.data == 'del_all_accounts':
+        accs = get_all_accounts(uid)
+        deletable = [a for a in accs if a.get('type') != 'env']
+        text = (
+            f"⚠️ *DELETE ALL ACCOUNTS?*\n\n"
+            f"📊 Total: {len(accs)} | Will delete: {len(deletable)}\n"
+            f"(💚 Env accounts can't be deleted — they come back on restart)\n\n"
+            f"❗ This is PERMANENT. Sessions will be gone forever!"
+        )
+        kb = [
+            [InlineKeyboardButton("☠️ YES, DELETE ALL", callback_data='del_all_confirm')],
+            [InlineKeyboardButton("🔙 Back", callback_data='delete_account')],
+        ]
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+
+    elif query.data == 'del_all_confirm':
+        accs = get_all_accounts(uid)
+        count = 0
+        for acc in accs:
+            if acc.get('type') == 'env':
+                continue
+            acc_id = acc['id']
+            stop_account(acc_id)
+            remove_account_by_id(acc_id)
+            await disconnect_client(acc_id)
+            count += 1
+        save_data()
+        kb = [[InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
+        await query.edit_message_text(
+            f"✅ {count} accounts deleted!\nAll sessions removed permanently.",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
 
     elif query.data.startswith('del_acc_'):
         acc_id = query.data.replace('del_acc_', '')
@@ -1346,20 +1459,26 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """🖼 Receives profile photo for Profile Setup."""
+    """🖼 Receives profile photo for Default or Custom profile."""
     uid = update.effective_user.id
     if not (is_owner(uid) or is_valid_admin(uid)):
         return
     awaiting = context.user_data.get('awaiting')
-    if awaiting and awaiting.startswith('prof_photo:'):
+    if awaiting == 'def_photo':
+        file_id = update.message.photo[-1].file_id
+        set_profile_key(DEFAULT_PROFILE_KEY, 'photo', file_id)
+        context.user_data['awaiting'] = None
+        kb = [[InlineKeyboardButton("⚙️ Default Profile", callback_data='profdefault')]]
+        await update.message.reply_text("✅ Default photo saved! 1-Click Apply All e sob account e lagbe.",
+                                        reply_markup=InlineKeyboardMarkup(kb))
+    elif awaiting and awaiting.startswith('prof_photo:'):
         acc_id = awaiting.split(':', 1)[1]
+        context.user_data['awaiting'] = None
         if not any(a['id'] == acc_id for a in get_all_accounts(uid)):
             await update.message.reply_text("⛔ Not your account!")
-            context.user_data['awaiting'] = None
             return
-        file_id = update.message.photo[-1].file_id   # highest resolution
+        file_id = update.message.photo[-1].file_id
         set_profile_key(acc_id, 'photo', file_id)
-        context.user_data['awaiting'] = None
         kb = [[InlineKeyboardButton("🎨 Profile Menu", callback_data=f"profacc_{acc_id}")]]
         await update.message.reply_text("✅ Photo saved! 1 click e apply korte paro.",
                                         reply_markup=InlineKeyboardMarkup(kb))
@@ -1444,7 +1563,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ══════════ 🎨 PROFILE INPUTS ══════════
+    # ══════════ 🎨 PROFILE INPUTS — DEFAULT ══════════
+    if awaiting == 'def_name':
+        context.user_data['awaiting'] = None
+        set_profile_key(DEFAULT_PROFILE_KEY, 'name', text)
+        kb = [[InlineKeyboardButton("⚙️ Default Profile", callback_data='profdefault')]]
+        await update.message.reply_text(f"✅ Default Name saved: `{text}`", parse_mode='Markdown',
+                                        reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if awaiting == 'def_bio':
+        context.user_data['awaiting'] = None
+        set_profile_key(DEFAULT_PROFILE_KEY, 'bio', text)
+        kb = [[InlineKeyboardButton("⚙️ Default Profile", callback_data='profdefault')]]
+        await update.message.reply_text(f"✅ Default Bio saved: `{text[:50]}`", parse_mode='Markdown',
+                                        reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if awaiting == 'def_chan':
+        context.user_data['awaiting'] = None
+        links = [x.strip() for x in re.split(r'[\n,]+', text) if x.strip()]
+        set_profile_key(DEFAULT_PROFILE_KEY, 'channels', links)
+        kb = [[InlineKeyboardButton("⚙️ Default Profile", callback_data='profdefault')]]
+        await update.message.reply_text(
+            f"✅ {len(links)} channel/group link saved (Default)!\n\n" +
+            "\n".join(f"• `{l}`" for l in links),
+            parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return
+
+    # ══════════ 🎨 PROFILE INPUTS — CUSTOM (per account) ══════════
     if awaiting and awaiting.startswith('prof_name:'):
         acc_id = awaiting.split(':', 1)[1]
         context.user_data['awaiting'] = None
@@ -1733,7 +1881,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     global SHOW_START_TO_OTHERS
     print("=" * 50, flush=True)
-    print("🤖 BOT v4.2 STARTING", flush=True)
+    print("🤖 BOT v4.3 STARTING", flush=True)
     print("=" * 50, flush=True)
 
     await init_env_accounts()
