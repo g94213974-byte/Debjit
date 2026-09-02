@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-📱 ADVANCED TELEGRAM MASS MESSAGING BOT v4.4
+📱 ADVANCED TELEGRAM MASS MESSAGING BOT v4.5
 ✅ ADMIN SYSTEM (owner-controlled, custom expiry time, auto-stop on expiry)
 ✅ Flexible time format ('1 day 10 min', '2d 5h', '45m', 'perm')
 ✅ Fixed: account delete bug (unique IDs)
 ✅ Fixed: dead-session now notifies owner instead of failing silently
 ✅ Status inside Settings | Delete ALL inside Delete Account
-✅ NEW: 🎨 Default Profile with NAME+LOGO POOL
-   → Add as many names/logos as you want (4, 5, 6...)
+✅ 🎨 Default Profile with NAME+LOGO POOL
+   → Add as many names/logos as you want
    → 1-Click Apply All: 1st name/logo → 1st account, 2nd → 2nd account...
-✅ Customize (per account) option REMOVED
+✅ ⚡ PARALLEL APPLY (all accounts at once — super fast) + LIVE % PROGRESS
 ✅ Back buttons on all prompts
 """
 
@@ -54,7 +54,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 print("=" * 60, flush=True)
-print("🤖 MESSAGING BOT v4.4 — PROFILE POOL", flush=True)
+print("🤖 MESSAGING BOT v4.5 — FAST PARALLEL PROFILE APPLY", flush=True)
 print("=" * 60, flush=True)
 
 # ══════════ ENVIRONMENT ══════════
@@ -245,10 +245,6 @@ def save_default_profile(cfg):
     profiles[DEFAULT_PROFILE_KEY] = cfg
     save_profiles(profiles)
 
-def default_is_empty():
-    cfg = get_default_profile()
-    return not (cfg.get('names') or cfg.get('photos') or cfg.get('bio') or cfg.get('channels'))
-
 # ══════════ FILE HELPERS ══════════
 def load_auth_sessions():
     if os.path.exists(AUTH_SESSIONS_FILE):
@@ -378,7 +374,7 @@ def home():
     running_count = sum(1 for acc in all_accs if account_stats.get(acc['id'], {}).get('running', False))
     total_sent = sum(account_stats.get(acc['id'], {}).get('sent', 0) for acc in all_accs)
     admin_count = len(load_admins())
-    return f"✅ Bot v4.4 | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Sent: {total_sent} | Admins: {admin_count}"
+    return f"✅ Bot v4.5 | Accounts: {len(all_accs)} | Active: {running_count}/{len(all_accs)} | Sent: {total_sent} | Admins: {admin_count}"
 
 @web_app.route("/health")
 def health():
@@ -527,7 +523,7 @@ async def join_link(client, link):
         await client(functions.channels.JoinChannelRequest(username))
 
 async def apply_profile(acc, name, photo_file_id, bio, channels, bot=None):
-    """🎨 Apply one account's profile: name + photo + bio + join channels."""
+    """🎨 Apply one account's profile: name + photo + bio + join channels. (FAST version)"""
     results = []
     acc_id = acc['id']
     client = await get_client(acc)
@@ -537,18 +533,18 @@ async def apply_profile(acc, name, photo_file_id, bio, channels, bot=None):
     if name:
         try:
             await client(UpdateProfileRequest(first_name=name))
-            results.append("✅ Name updated")
+            results.append("✅ Name")
         except Exception as e:
             results.append(f"❌ Name: {str(e)[:50]}")
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
 
     if bio:
         try:
             await client(UpdateProfileRequest(about=bio))
-            results.append("✅ Bio updated")
+            results.append("✅ Bio")
         except Exception as e:
             results.append(f"❌ Bio: {str(e)[:50]}")
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
 
     if photo_file_id:
         photo_path = None
@@ -559,22 +555,22 @@ async def apply_profile(acc, name, photo_file_id, bio, channels, bot=None):
             with open(photo_path, 'rb') as fh:
                 uploaded = await client.upload_file(fh)
             await client(UploadProfilePhotoRequest(file=uploaded))
-            results.append("✅ Photo updated")
+            results.append("✅ Photo")
         except Exception as e:
             results.append(f"❌ Photo: {str(e)[:50]}")
         finally:
             if photo_path and os.path.exists(photo_path):
                 try: os.remove(photo_path)
                 except: pass
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
 
     for link in channels:
         try:
             await join_link(client, link)
-            results.append(f"✅ Joined: {link}")
+            results.append(f"✅ {link}")
         except Exception as e:
             results.append(f"❌ {link}: {str(e)[:40]}")
-        await asyncio.sleep(2)
+        await asyncio.sleep(0.5)
 
     return results
 
@@ -825,7 +821,7 @@ def main_menu_text(user_id):
         a = get_admin(user_id)
         expiry = f"\n⏳ Admin time: {remaining_time_str(a.get('expires_at') if a else None)}"
     return (
-        f"🤖 *Messaging Bot v4.4*\n"
+        f"🤖 *Messaging Bot v4.5*\n"
         f"👤 Role: {role}{expiry}\n\n"
         f"📊 Accounts: {total} (Running: {running})\n"
         f"⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | Cycle {CYCLE_WAIT}s\n"
@@ -1070,7 +1066,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("♻️ Default Profile reset! Sob muchhe geche.",
                                       reply_markup=InlineKeyboardMarkup(kb))
 
-    # ── ⚡ 1-CLICK APPLY ALL (pool onujayi distribute) ──
+    # ── ⚡ 1-CLICK APPLY ALL (PARALLEL + LIVE % PROGRESS) ──
     elif query.data == 'profapply_all':
         accs = get_all_accounts(uid)
         if not accs:
@@ -1092,35 +1088,64 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        await query.edit_message_text(
-            f"⏳ Applying profiles to {len(accs)} account(s)...\n"
-            f"Ekhon ektu somoy lagbe (name, logo, bio, channel join)..."
+        total = len(accs)
+        progress = {'done': 0, 'lines': {}}   # i → result line
+
+        status_msg = await query.edit_message_text(
+            f"⚡ Starting parallel apply for {total} account(s)...\n"
+            f"▓▓▓▓▓▓▓▓▓▓ 0% (0/{total})"
         )
-        report = []
-        for i, acc in enumerate(accs):
-            # 🔥 ORDER-BASED DISTRIBUTION: 1st name/logo → 1st account, 2nd → 2nd...
-            acc_name = names[i % len(names)] if names else ''
+
+        async def apply_one(i, acc):
+            acc_name_pool = names[i % len(names)] if names else ''
             acc_photo = photos[i % len(photos)] if photos else None
-            acc_label = acc.get('name', acc['id'])
-            assigned = f"'{acc_name}'" if acc_name else "(no name)"
+            acc_label = acc.get('name', acc['id'])[:15]
+            assigned = f"'{acc_name_pool}'" if acc_name_pool else "(no name)"
             if acc_photo:
                 assigned += f" + Logo#{(i % len(photos)) + 1}"
             try:
-                results = await apply_profile(acc, acc_name, acc_photo, bio, channels, bot=context.bot)
+                results = await apply_profile(acc, acc_name_pool, acc_photo, bio, channels, bot=context.bot)
                 ok = sum(1 for r in results if r.startswith('✅'))
                 fail = sum(1 for r in results if r.startswith('❌'))
-                report.append(f"#{i+1} {acc_label} → {assigned}: ✅{ok} ❌{fail}")
+                progress['lines'][i] = f"#{i+1} {acc_label} → {assigned}: ✅{ok} ❌{fail}"
             except Exception as e:
-                report.append(f"#{i+1} {acc_label} → {assigned}: ❌ {str(e)[:50]}")
+                progress['lines'][i] = f"#{i+1} {acc_label} → {assigned}: ❌ {str(e)[:50]}"
+            progress['done'] += 1
+
+        # 🔥 SOB ACCOUNT PARALLEL E CHOLE — 4 ta account ek sathe apply hobe!
+        tasks = [asyncio.create_task(apply_one(i, acc)) for i, acc in enumerate(accs)]
+
+        # 📊 LIVE % progress update (prottek 2 second e)
+        while any(not t.done() for t in tasks):
+            pct = int(progress['done'] * 100 / total)
+            bar = '█' * (pct // 10) + '▓' * (10 - pct // 10)
+            text = (f"⚡ *APPLYING PROFILES...*\n\n"
+                    f"{bar} {pct}% ({progress['done']}/{total})\n\n")
+            for i in sorted(progress['lines']):
+                text += progress['lines'][i] + "\n"
+            try:
+                await status_msg.edit_text(text, parse_mode='Markdown')
+            except:
+                pass
             await asyncio.sleep(2)
+
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        # ✅ Final 100% report
+        bar = '█' * 10
+        text = (f"✅ *APPLY ALL DONE!*\n\n"
+                f"{bar} 100% ({total}/{total})\n\n")
+        for i in sorted(progress['lines']):
+            text += progress['lines'][i] + "\n"
+
         kb = [
             [InlineKeyboardButton("🎨 Profile Menu", callback_data='profile_setup')],
             [InlineKeyboardButton("🔙 Back", callback_data='back_main')],
         ]
-        await query.edit_message_text(
-            "⚡ *1-Click Apply ALL — Done!*\n\n" + "\n".join(report),
-            parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb)
-        )
+        try:
+            await status_msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb))
+        except:
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
 
     # ══════════ 👑 ADMIN PANEL — OWNER ONLY ══════════
     elif query.data == 'admin_panel':
@@ -1812,7 +1837,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     global SHOW_START_TO_OTHERS
     print("=" * 50, flush=True)
-    print("🤖 BOT v4.4 STARTING", flush=True)
+    print("🤖 BOT v4.5 STARTING", flush=True)
     print("=" * 50, flush=True)
 
     await init_env_accounts()
