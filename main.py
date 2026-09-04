@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-📱 TELEGRAM MASS MESSAGING BOT v5.1
-✅ Phone login reply fix (flood-wait aware, error boundary, always-ack)
-✅ Buttons: Start/Stop side-by-side in 1 row, every other action on its own row
-✅ Admin time: +100000d increase / -10d decrease / =perm set / perm
-✅ Owner sets per-admin account login limit (🔢 Set Account Limit)
-✅ Profile rename reflected in Status & Delete menu
-✅ Limit + duplicate-phone enforced on session-add & phone-login
+📱 TELEGRAM MASS MESSAGING BOT v6.0
+✅ Per-user speed (owner & each admin has own min/max/cycle)
+✅ Every admin gets private Settings (own Messages + own Speed)
+✅ Admin accounts fully isolated by owner_id (each controls only their own)
+✅ Owner-only Admin Panel + Broadcast (message / photo / video to all admins)
+✅ Admin time one-tap (+/‐/=perm/expire) + text command
 """
 import sys, os, asyncio, random, logging, json, threading, httpx, re, uuid
 from datetime import datetime, timedelta
@@ -27,7 +26,7 @@ from flask import Flask
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
                     force=True, handlers=[logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger(__name__)
-print("=" * 60, flush=True); print("🤖 BOT v5.1 (FIXED)", flush=True); print("=" * 60, flush=True)
+print("=" * 60, flush=True); print("🤖 BOT v6.0", flush=True); print("=" * 60, flush=True)
 
 # ── ENV ──
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -42,19 +41,48 @@ ADMINS_FILE = "admins.json"
 PROFILE_FILE = "profile_configs.json"
 DEFAULT_PROFILE_KEY = "__default__"
 MESSAGE = os.environ.get("MESSAGE", "𝟭𝟬 𝗠𝗜𝗡 𝗩𝗖 ₹𝟰𝟱 𝗕𝗔𝗕𝗬😘")
-MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "6"))
+MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "6"))   # global default (fallback)
 MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "10"))
 CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "45"))
 
 running_tasks, stop_flags, account_clients, account_stats, phone_login_states, display_names = {}, {}, {}, {}, {}, {}
 data_file = "bot_data.json"
 SHOW_START_TO_OTHERS = True
+
+# ── NEW: per-user speed storage ──
+USER_SPEED_FILE = "user_speed.json"
+def load_user_speeds():
+    try: return json.load(open(USER_SPEED_FILE)) if os.path.exists(USER_SPEED_FILE) else {}
+    except: return {}
+def save_user_speeds(data):
+    try: json.dump(data, open(USER_SPEED_FILE, 'w'), indent=2)
+    except: pass
+def speed_for(uid):
+    """Per-user (min,max,cycle); falls back to globals."""
+    s = load_user_speeds().get(str(uid))
+    if not s: return (MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT)
+    return (s.get('min', MIN_INTERVAL), s.get('max', MAX_INTERVAL), s.get('cycle', CYCLE_WAIT))
+def set_speed(uid, min_i=None, max_i=None, cycle=None):
+    d = load_user_speeds(); s = d.setdefault(str(uid), {})
+    if min_i is not None: s['min'] = min_i
+    if max_i is not None: s['max'] = max_i
+    if cycle is not None: s['cycle'] = cycle
+    save_user_speeds(d)
+
 try:
     _e = os.environ.get("ADMIN_ACCOUNT_LIMIT", "").strip()
     DEFAULT_ADMIN_LIMIT = int(_e) if _e else None
 except Exception:
     DEFAULT_ADMIN_LIMIT = None
 BACK_KB = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_main')]])
+
+# ── NEW: broadcast target list = owner + all valid (non-expired) admins ──
+def broadcast_targets():
+    ids = [OWNER_ID]
+    for a in load_admins():
+        if is_valid_admin(a['user_id']) and a['user_id'] != OWNER_ID:
+            ids.append(a['user_id'])
+    return list(dict.fromkeys(ids))
 
 # ── Permissions ──
 def is_owner(u): return u == OWNER_ID
@@ -64,6 +92,12 @@ def load_admins():
 def save_admins(x):
     try: json.dump(x, open(ADMINS_FILE, 'w'), indent=2)
     except: pass
+def replace_admin(target, new_entry):
+    admins = load_admins()
+    for i, a in enumerate(admins):
+        if a['user_id'] == target:
+            admins[i] = new_entry; break
+    save_admins(admins)
 def get_admin(u):
     for a in load_admins():
         if a['user_id'] == u: return a
@@ -249,7 +283,7 @@ def home():
     all_a = get_all_accounts()
     run = sum(1 for a in all_a if account_stats.get(a['id'],{}).get('running',False))
     sent = sum(account_stats.get(a['id'],{}).get('sent',0) for a in all_a)
-    return f"v5.1 | Accounts:{len(all_a)} | Active:{run}/{len(all_a)} | Sent:{sent} | Admins:{len(load_admins())}"
+    return f"v6.0 | Accounts:{len(all_a)} | Active:{run}/{len(all_a)} | Sent:{sent} | Admins:{len(load_admins())}"
 @web_app.route("/health")
 def health(): return "OK", 200
 def run_flask(): web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)), debug=False, use_reloader=False)
@@ -356,10 +390,12 @@ async def apply_profile(acc, name, photo, bio, channels, bot=None):
         await asyncio.sleep(0.5)
     return r
 
+# ── NEW: run loop now reads the ACCOUNT OWNER's private speed ──
 async def run_account_messaging(acc, owner):
     aid = acc['id']; stop_flags[aid] = False
     account_stats.setdefault(aid, {'sent':0,'running':False,'failed_channels':[]})
     account_stats[aid]['running'] = True
+    mn, mx, cyc = speed_for(owner)   # private speed of this account's owner
     try:
         client = await get_client(acc); me = await client.get_me()
         if getattr(me,'first_name',None): persist_rename(aid, me.first_name)
@@ -374,6 +410,7 @@ async def run_account_messaging(acc, owner):
         while not stop_flags.get(aid, False):
             if not is_owner(owner) and not is_valid_admin(owner):
                 stop_account(aid); return
+            mn, mx, cyc = speed_for(owner)   # re-read so live speed edits apply next cycle
             random.shuffle(groups)
             for g in groups:
                 if stop_flags.get(aid, False): break
@@ -395,12 +432,12 @@ async def run_account_messaging(acc, owner):
                     if any(x in str(e).lower() for x in ['ban','restrict','forbidden','write','permission']): failed.add(g.id)
                 except Exception as e:
                     if any(x in str(e).lower() for x in ['ban','restrict','forbidden','admin',"can't write"]): failed.add(g.id)
-                await asyncio.sleep(random.randint(MIN_INTERVAL, MAX_INTERVAL))
+                await asyncio.sleep(random.randint(mn, mx))
             res, reason = await is_account_restricted(client)
             if res: await notify_user(owner, f"🚨 *RESTRICTED*\n{get_display_name(acc)}"); stop_account(aid); return
             if stop_flags.get(aid): break
             failed = set(); cycle += 1
-            for i in range(CYCLE_WAIT):
+            for i in range(cyc):
                 if stop_flags.get(aid): break
                 await asyncio.sleep(1)
             if cycle % 15 == 0:
@@ -457,22 +494,27 @@ async def test_session_only(ss):
             try: await c.disconnect()
             except: pass
 
-# ── Keyboards (Start/Stop pasa-pasi, rest own row) ──
+# ── Keyboards ──
 def main_menu_keyboard(u):
     if is_owner(u):
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("▶️ Start All", callback_data='start_all'),
              InlineKeyboardButton("⏹️ Stop All", callback_data='stop_all')],
             [InlineKeyboardButton("⚙️ Settings", callback_data='settings')],
+            [InlineKeyboardButton("➡️ Messages", callback_data='message_list'), InlineKeyboardButton("⏱️ Speed", callback_data='edit_speed')],
             [InlineKeyboardButton("➕ Add Session", callback_data='add_account')],
             [InlineKeyboardButton("📱 Phone Login", callback_data='phone_login')],
             [InlineKeyboardButton("🗑 Delete Account", callback_data='delete_account')],
             [InlineKeyboardButton("🎨 Profile Setup", callback_data='profile_setup')],
-            [InlineKeyboardButton("👑 Admin Panel", callback_data='admin_panel')]])
+            [InlineKeyboardButton("👑 Admin Panel", callback_data='admin_panel'),
+             InlineKeyboardButton("📢 Broadcast", callback_data='broadcast_menu')]])
+    # Admins: full bot access but each ONLY to their own accounts
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("▶️ Start All", callback_data='start_all'),
          InlineKeyboardButton("⏹️ Stop All", callback_data='stop_all')],
         [InlineKeyboardButton("📊 Status", callback_data='status')],
+        [InlineKeyboardButton("⚙️ Settings", callback_data='settings')],
+        [InlineKeyboardButton("➡️ Messages", callback_data='message_list'), InlineKeyboardButton("⏱️ Speed", callback_data='edit_speed')],
         [InlineKeyboardButton("➕ Add Session", callback_data='add_account')],
         [InlineKeyboardButton("📱 Phone Login", callback_data='phone_login')],
         [InlineKeyboardButton("🗑 Delete Account", callback_data='delete_account')],
@@ -481,6 +523,7 @@ def main_menu_keyboard(u):
 def main_menu_text(u):
     accs = get_all_accounts(u); run = sum(1 for a in accs if account_stats.get(a['id'],{}).get('running',False))
     sent = sum(account_stats.get(a['id'],{}).get('sent',0) for a in accs)
+    mn, mx, cyc = speed_for(u)   # each user shows their OWN speed
     role = "👑 Owner" if is_owner(u) else "👤 Admin"
     extra = ""
     if not is_owner(u):
@@ -488,8 +531,9 @@ def main_menu_text(u):
         cap = admin_max_accounts(u); cur = owner_acc_count(u)
         lim = f"\n🔢 Acc: {cur}" if cap is None else f"\n🔢 Acc: {cur}/{cap}"
         extra = exp + lim
-    return (f"🤖 *Bot v5.1*\n👤 {role}{extra}\n\n"
-            f"📊 Accounts: {len(accs)} (Running:{run})\n⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | Cycle {CYCLE_WAIT}s\n📨 Sent: {sent}")
+    return (f"🤖 *Bot v6.0*\n👤 {role}{extra}\n\n"
+            f"📊 Accounts: {len(accs)} (Running:{run})\n"
+            f"⏱️ {mn}-{mx}s | Cycle {cyc}s\n📨 Sent: {sent}")
 
 async def start_command(u, c):
     uid = u.effective_user.id
@@ -499,6 +543,44 @@ async def start_command(u, c):
         return
     if SHOW_START_TO_OTHERS: await u.message.reply_text("🤖 Private bot. Owner ke contact koro.")
 
+# ── NEW: owner-only one-tap admin time executor (shared w/ add_admin text) ──
+async def apply_admin_time(target, op, nd, q=None, msg=False, text_ui=None, c=None):
+    """op in {'+','-','='}; nd is parsed datetime or None(=perm)."""
+    now = datetime.now()
+    admins = load_admins(); a = get_admin(target)
+    if a is None:
+        a = {'user_id':target,'expires_at':None if nd is None else nd.isoformat(),
+             'added_at':now.isoformat(),'updated_at':now.isoformat(),'max_accounts':DEFAULT_ADMIN_LIMIT}
+        admins.append(a); save_admins(admins)
+        chg = remaining_time_str(a['expires_at'])
+        resp = f"✅ Admin `{target}` added! ⏳ {chg}"
+    else:
+        if nd is None:
+            if op == '-': a['expires_at'] = now.isoformat(); chg = "expired now"
+            else: a['expires_at'] = None; chg = "♾️ Permanent"
+        else:
+            cur = None
+            try: cur = datetime.fromisoformat(a['expires_at']) if a.get('expires_at') else None
+            except: cur = None
+            rem = (cur - now) if (cur and cur > now) else timedelta(0)
+            dl = nd - now
+            if op == '=': ne = nd
+            elif op == '-':
+                ne = now + (rem - dl)
+                if ne < now: ne = now
+            else: ne = now + dl + (rem)   # simple additive
+            a['expires_at'] = ne.isoformat(); chg = remaining_time_str(a['expires_at'])
+        a['updated_at'] = now.isoformat()
+        replace_admin(target, a)
+        resp = f"✅ `{target}` → ⏳ {chg}"
+    if msg and text_ui:
+        try: await text_ui.reply_text(resp, parse_mode='Markdown', reply_markup=BACK_KB)
+        except: pass
+    elif q is not None:
+        try: await q.edit_message_text(resp, parse_mode='Markdown', reply_markup=BACK_KB)
+        except: pass
+    return resp
+
 async def button_click(u, c):
     global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT, SHOW_START_TO_OTHERS
     q = u.callback_query; await q.answer(); uid = q.from_user.id
@@ -507,7 +589,8 @@ async def button_click(u, c):
         else: await q.edit_message_text("​")
         return
 
-    if q.data == 'start_all':
+    d = q.data
+    if d == 'start_all':
         p = []
         for a in get_all_accounts(uid):
             if account_stats.get(a['id'],{}).get('running',False): p.append(f"✅ {get_display_name(a)} running")
@@ -516,13 +599,13 @@ async def button_click(u, c):
                 running_tasks[a['id']] = asyncio.create_task(run_account_messaging(a, uid))
                 p.append(f"▶️ {get_display_name(a)} started")
         await q.edit_message_text("\n".join(p) if p else "❌ No accounts!", reply_markup=BACK_KB)
-    elif q.data == 'stop_all':
+    elif d == 'stop_all':
         p = []
         for a in get_all_accounts(uid):
             if account_stats.get(a['id'],{}).get('running',False): stop_account(a['id']); p.append(f"⏹️ {get_display_name(a)} stopping")
             else: p.append(f"✅ {get_display_name(a)} stopped")
         await q.edit_message_text("\n".join(p) if p else "✅ none running", reply_markup=BACK_KB)
-    elif q.data == 'status':
+    elif d == 'status':
         accs = get_all_accounts(uid); txt = "📊 *Status*\n\n"
         for i, a in enumerate(accs, 1):
             st = '🟢' if account_stats.get(a['id'],{}).get('running',False) else '🔴'
@@ -530,7 +613,47 @@ async def button_click(u, c):
         if not accs: txt += "_None_\n"
         txt += f"\nTot: {sum(account_stats.get(a['id'],{}).get('sent',0) for a in accs)}"
         await q.edit_message_text(txt, parse_mode='Markdown', reply_markup=BACK_KB)
-    elif q.data == 'profile_setup':
+    elif d == 'settings':
+        kb = [[InlineKeyboardButton("➡️ Messages", callback_data='message_list')],
+              [InlineKeyboardButton("⏱️ Speed", callback_data='edit_speed')],
+              [InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
+        mn, mx, cyc = speed_for(uid)
+        await q.edit_message_text(f"⚙️ *Your Settings*\n⏱️ {mn}-{mx}s | Cycle {cyc}s\n(These apply only to YOUR accounts.)",
+                                  parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+    elif d == 'message_list':
+        m = load_messages_for(uid); txt = f"📝 ({len(m)}):\n" + "".join(f"{i}.`{x[:20]}`\n" for i,x in enumerate(m,1))
+        kb = [[InlineKeyboardButton("➕ Add", callback_data='add_message'), InlineKeyboardButton("🗑 Del", callback_data='delete_message_menu')],
+              [InlineKeyboardButton("🔄 Reset", callback_data='reset_messages')],
+              [InlineKeyboardButton("Back", callback_data='settings')]]
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb))
+    elif d == 'edit_speed':
+        mn, mx, cyc = speed_for(uid)
+        kb = [[InlineKeyboardButton(f"Min {mn}s", callback_data='set_min'), InlineKeyboardButton(f"Max {mx}s", callback_data='set_max')],
+              [InlineKeyboardButton(f"Cycle {cyc}s", callback_data='set_cycle')],
+              [InlineKeyboardButton("Back", callback_data='settings')]]
+        await q.edit_message_text("⏱️ Speed", reply_markup=InlineKeyboardMarkup(kb))
+    elif d == 'add_message':
+        c.user_data['awaiting'] = 'add_message'; await q.edit_message_text("✏️ New message:", reply_markup=BACK_KB)
+    elif d == 'delete_message_menu':
+        m = load_messages_for(uid)
+        if not m: await q.edit_message_text("❌ none", reply_markup=BACK_KB); return
+        kb = [[InlineKeyboardButton(f"{i+1}.{x[:15]}", callback_data=f'del_msg_{i}')] for i,x in enumerate(m)]
+        kb.append([InlineKeyboardButton("Back", callback_data='message_list')])
+        await q.edit_message_text("Which?", reply_markup=InlineKeyboardMarkup(kb))
+    elif d.startswith('del_msg_'):
+        m = load_messages_for(uid); i = int(d.replace('del_msg_',''))
+        if 0 <= i < len(m): m.pop(i); save_messages_for(uid, m)
+        await q.edit_message_text("Deleted", reply_markup=BACK_KB)
+    elif d == 'reset_messages': save_messages_for(uid, [MESSAGE]); await q.edit_message_text("Reset", reply_markup=BACK_KB)
+    elif d == 'set_min':
+        mn, mx, cyc = speed_for(uid); c.user_data['awaiting'] = 'set_min'
+        await q.edit_message_text(f"Min (1-{mx-1}):", reply_markup=BACK_KB)
+    elif d == 'set_max':
+        mn, mx, cyc = speed_for(uid); c.user_data['awaiting'] = 'set_max'
+        await q.edit_message_text(f"Max (>{mn}):", reply_markup=BACK_KB)
+    elif d == 'set_cycle':
+        c.user_data['awaiting'] = 'set_cycle'; await q.edit_message_text("Cycle (5+):", reply_markup=BACK_KB)
+    elif d == 'profile_setup':
         accs = get_all_accounts(uid)
         cfg = get_default_profile(); nm = cfg.get('names',[]); ph = cfg.get('photos',[])
         kb = [[InlineKeyboardButton(f"⚙️ Default Profile (Names:{len(nm)}|Logos:{len(ph)})", callback_data='profdefault')],
@@ -539,7 +662,7 @@ async def button_click(u, c):
         if not accs: await q.edit_message_text("❌ No accounts!", reply_markup=BACK_KB); return
         await q.edit_message_text(f"🎨 *Profile Setup*\nApply por Status/Delete e notun name dekhabe.\n📊 {len(accs)}",
                                   parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data == 'profdefault':
+    elif d == 'profdefault':
         cfg = get_default_profile(); nm = cfg.get('names',[]); ph = cfg.get('photos',[]); ch = cfg.get('channels',[])
         txt = f"⚙️ *Profile*\n📝 Names({len(nm)}):\n" + "".join(f" {i}.`{x}`\n" for i,x in enumerate(nm,1))
         txt += f"🖼 Logos:{len(ph)} | 📄 Bio:`{cfg.get('bio','—')}`\n📢 Chan({len(ch)}):\n" + "".join(f" •`{x}`\n" for x in ch)
@@ -550,32 +673,32 @@ async def button_click(u, c):
               [InlineKeyboardButton("♻️ Reset", callback_data='def_reset')],
               [InlineKeyboardButton("🔙 Back", callback_data='profile_setup')]]
         await q.edit_message_text(txt, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data == 'def_add_name': c.user_data['awaiting'] = 'def_add_name'; await q.edit_message_text("Line-wise names pathao:", reply_markup=BACK_KB)
-    elif q.data == 'def_del_name':
+    elif d == 'def_add_name': c.user_data['awaiting'] = 'def_add_name'; await q.edit_message_text("Line-wise names pathao:", reply_markup=BACK_KB)
+    elif d == 'def_del_name':
         nm = get_default_profile().get('names',[])
         if not nm: await q.edit_message_text("❌ none", reply_markup=BACK_KB); return
         kb = [[InlineKeyboardButton(f"🗑 {i+1}.{x[:20]}", callback_data=f'def_delname_{i}')] for i,x in enumerate(nm)]
         kb.append([InlineKeyboardButton("Back", callback_data='profdefault')])
         await q.edit_message_text("Which?", reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data.startswith('def_delname_'):
-        cfg = get_default_profile(); nm = cfg.get('names',[]); i = int(q.data.replace('def_delname_',''))
+    elif d.startswith('def_delname_'):
+        cfg = get_default_profile(); nm = cfg.get('names',[]); i = int(d.replace('def_delname_',''))
         if 0 <= i < len(nm): nm.pop(i); cfg['names'] = nm; save_default_profile(cfg)
         await q.edit_message_text("Deleted!", reply_markup=BACK_KB)
-    elif q.data == 'def_add_photo': c.user_data['awaiting'] = 'def_add_photo'; await q.edit_message_text("Photo pathao:", reply_markup=BACK_KB)
-    elif q.data == 'def_del_photo':
+    elif d == 'def_add_photo': c.user_data['awaiting'] = 'def_add_photo'; await q.edit_message_text("Photo pathao:", reply_markup=BACK_KB)
+    elif d == 'def_del_photo':
         ph = get_default_profile().get('photos',[])
         if not ph: await q.edit_message_text("❌ none", reply_markup=BACK_KB); return
         kb = [[InlineKeyboardButton(f"🗑 Logo #{i+1}", callback_data=f'def_delphoto_{i}')] for i in range(len(ph))]
         kb.append([InlineKeyboardButton("Back", callback_data='profdefault')])
         await q.edit_message_text("Which?", reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data.startswith('def_delphoto_'):
-        cfg = get_default_profile(); ph = cfg.get('photos',[]); i = int(q.data.replace('def_delphoto_',''))
+    elif d.startswith('def_delphoto_'):
+        cfg = get_default_profile(); ph = cfg.get('photos',[]); i = int(d.replace('def_delphoto_',''))
         if 0 <= i < len(ph): ph.pop(i); cfg['photos'] = ph; save_default_profile(cfg)
         await q.edit_message_text("Deleted!", reply_markup=BACK_KB)
-    elif q.data == 'def_bio': c.user_data['awaiting'] = 'def_bio'; await q.edit_message_text("Bio likho:", reply_markup=BACK_KB)
-    elif q.data == 'def_chan': c.user_data['awaiting'] = 'def_chan'; await q.edit_message_text("Links:", reply_markup=BACK_KB)
-    elif q.data == 'def_reset': save_default_profile({}); await q.edit_message_text("Reset!", reply_markup=BACK_KB)
-    elif q.data == 'profapply_all':
+    elif d == 'def_bio': c.user_data['awaiting'] = 'def_bio'; await q.edit_message_text("Bio likho:", reply_markup=BACK_KB)
+    elif d == 'def_chan': c.user_data['awaiting'] = 'def_chan'; await q.edit_message_text("Links:", reply_markup=BACK_KB)
+    elif d == 'def_reset': save_default_profile({}); await q.edit_message_text("Reset!", reply_markup=BACK_KB)
+    elif d == 'profapply_all':
         accs = get_all_accounts(uid); cfg = get_default_profile()
         nm = cfg.get('names',[]); ph = cfg.get('photos',[]); bio = cfg.get('bio',''); ch = cfg.get('channels',[])
         if not accs or (not nm and not ph and not bio and not ch): await q.edit_message_text("❌ Add account/config first!", reply_markup=BACK_KB); return
@@ -597,87 +720,100 @@ async def button_click(u, c):
         await asyncio.gather(*tasks, return_exceptions=True)
         await sm.edit_text("✅ *DONE!*\n\n" + "\n".join(prog['lines'][i] for i in sorted(prog['lines'])),
                            parse_mode='Markdown', reply_markup=BACK_KB)
-    elif q.data == 'admin_panel':
+
+    # ── OWNER-ONLY sections ──
+    elif d == 'admin_panel':
         if not is_owner(uid): return
         kb = [[InlineKeyboardButton("➕ Add/Edit Time (+/-/=)", callback_data='add_admin')],
               [InlineKeyboardButton("📋 Admin List", callback_data='admin_list')],
               [InlineKeyboardButton("🔢 Set Account Limit", callback_data='set_admin_limit')],
               [InlineKeyboardButton(f"👻 Start-msg: {'ON' if SHOW_START_TO_OTHERS else 'OFF'}", callback_data='toggle_startmsg')],
               [InlineKeyboardButton("Back", callback_data='back_main')]]
-        await q.edit_message_text("👑 *Admin Panel*\n`uid +30d` / `uid -10d` / `uid =perm`", reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data == 'set_admin_limit':
+        await q.edit_message_text("👑 *Admin Panel (owner only)*\n`uid +30d` / `uid -10d` / `uid =perm`",
+                                  reply_markup=InlineKeyboardMarkup(kb))
+    elif d == 'broadcast_menu':
+        if not is_owner(uid): return
+        c.user_data['awaiting'] = 'broadcast_capture'
+        kb = [[InlineKeyboardButton("💬 Text Broadcast", callback_data='bc_text'),
+               InlineKeyboardButton("🎵 Media Buy", callback_data='bc_text')],
+              [InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
+        await q.edit_message_text("📢 *Broadcast*\nPhoto/Video pathao ya text — sab admins ke jayega. Cancel: /cancel",
+                                  parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+    elif d == 'set_admin_limit':
         if not is_owner(uid): return
         c.user_data['awaiting'] = 'admin_limit'; await q.edit_message_text("🔢 `USER_ID NUMBER` (0=unlimited):", parse_mode='Markdown', reply_markup=BACK_KB)
-    elif q.data == 'admin_list':
+    elif d == 'add_admin':
+        if not is_owner(uid): return
+        c.user_data['awaiting'] = 'add_admin'; await q.edit_message_text("➕ `USER_ID [+|-|=]TIME`\n`111 +100000d` / `111 -10d` / `111 =perm`", parse_mode='Markdown', reply_markup=BACK_KB)
+    elif d == 'toggle_startmsg':
+        if not is_owner(uid): return
+        SHOW_START_TO_OTHERS = not SHOW_START_TO_OTHERS; save_data()
+        await q.edit_message_text(f"Start-msg {'ON' if SHOW_START_TO_OTHERS else 'OFF'}", reply_markup=BACK_KB)
+    elif d.startswith('bc_'):
+        if not is_owner(uid): return
+        # unified capture flow answered in handle_text/handle_photo
+        c.user_data['awaiting'] = 'broadcast_capture'
+        await q.edit_message_text("✍️ Ab message/madia pathao (sab admins ke):", reply_markup=BACK_KB)
+    elif d == 'admin_list':
         if not is_owner(uid): return
         admins = load_admins()
         if not admins: await q.edit_message_text("❌ none", reply_markup=BACK_KB); return
         txt = "📋 *Admins*\n\n"; kb = []
         for a in admins:
             accs = get_all_accounts(a['user_id'])
-            cap = a.get('max_accounts'); cap_str = f"🔢 {len(accs)}/{cap}" if cap else f"🔢 {len(accs)}"
+            cap = a.get('max_accounts'); cap_str = f"🔢 {len(accs)}" if not cap else f"🔢 {len(accs)}/{cap}"
             txt += f"👤 `{a['user_id']}`\n ⏳ {remaining_time_str(a.get('expires_at'))}\n {cap_str}\n\n"
+            kb.append([InlineKeyboardButton(f"🕐 Edit {a['user_id']}", callback_data=f'admin_edit_{a["user_id"]}')])
             kb.append([InlineKeyboardButton(f"🗑 Del {a['user_id']}", callback_data=f'del_admin_{a["user_id"]}')])
-        kb.append([InlineKeyboardButton("Back", callback_data='admin_panel')])
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data='admin_panel')])
         await q.edit_message_text(txt, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data.startswith('del_admin_'):
+    elif d.startswith('admin_edit_'):
         if not is_owner(uid): return
-        t = int(q.data.replace('del_admin_',''))
-        save_admins([a for a in load_admins() if a['user_id'] != t]); stop_accounts_of(t)
-        await q.edit_message_text(f"✅ Admin {t} deleted!", reply_markup=BACK_KB)
-    elif q.data == 'add_admin':
+        t = int(d.replace('admin_edit_',''))
+        a = get_admin(t)
+        if not a: await q.edit_message_text("❌ none", reply_markup=BACK_KB); return
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ +30d", callback_data=f'admop_{t}_+30'),
+             InlineKeyboardButton("➕ +100d", callback_data=f'admop_{t}_+100')],
+            [InlineKeyboardButton("➖ -10d", callback_data=f'admop_{t}_-10'),
+             InlineKeyboardButton("➖ -30d", callback_data=f'admop_{t}_-30')],
+            [InlineKeyboardButton("♾️ =perm", callback_data=f'admop_{t}_=perm'),
+             InlineKeyboardButton("⏹ expire", callback_data=f'admop_{t}_=0')],
+            [InlineKeyboardButton("🔙 Back", callback_data='admin_list')]])
+        accs = get_all_accounts(t)
+        unames = "\n".join(f" • {get_display_name(x)}" for x in accs[:10]) or " _none_"
+        await q.edit_message_text(f"👤 `{t}`\n⏳ {remaining_time_str(a.get('expires_at'))}\n📊 Accounts:\n{unames}",
+                                  parse_mode='Markdown', reply_markup=kb)
+    elif d.startswith('admop_'):
         if not is_owner(uid): return
-        c.user_data['awaiting'] = 'add_admin'; await q.edit_message_text("➕ `USER_ID [+|-|=]TIME`\n`111 +100000d` / `111 -10d` / `111 =perm`", parse_mode='Markdown', reply_markup=BACK_KB)
-    elif q.data == 'toggle_startmsg':
+        try:
+            # callback layout: admop_<target>_<op>
+            body = d.replace('admop_',''); t_s, op = body.rsplit('_',1); target = int(t_s)
+        except Exception:
+            await q.edit_message_text("❌ parse err", reply_markup=BACK_KB); return
+        now = datetime.now()
+        if op == 'perm': nd = None; o = '='
+        elif op == '0':
+            a = get_admin(target)
+            if a: a['expires_at'] = now.isoformat(); a['updated_at']=now.isoformat(); replace_admin(target,a)
+            await q.edit_message_text(f"✅ `{target}` expired now", reply_markup=BACK_KB); return
+        else:
+            amt = int(op.replace('+','').replace('-',''))
+            o = '+' if op.startswith('+') else '-'
+            # nd = now +- amt days; but apply_admin_time does additive via rem logic
+            nd = now + timedelta(days=amt)
+        await apply_admin_time(target, o, nd if op!='perm' else None, q=q)
+    elif d.startswith('del_admin_'):
         if not is_owner(uid): return
-        SHOW_START_TO_OTHERS = not SHOW_START_TO_OTHERS; save_data()
-        await q.edit_message_text(f"Start-msg {'ON' if SHOW_START_TO_OTHERS else 'OFF'}", reply_markup=BACK_KB)
-    elif q.data == 'settings':
-        if not is_owner(uid): return
-        kb = [[InlineKeyboardButton("📊 Status", callback_data='status')],
-              [InlineKeyboardButton("📝 Messages", callback_data='message_list')],
-              [InlineKeyboardButton("⏱️ Speed", callback_data='edit_speed')],
-              [InlineKeyboardButton("Back", callback_data='back_main')]]
-        await q.edit_message_text(f"⚙️ *Settings*\n⏱️ {MIN_INTERVAL}-{MAX_INTERVAL}s | Cycle {CYCLE_WAIT}s", reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data == 'message_list':
-        m = load_messages_for(uid); txt = f"📝 ({len(m)}):\n" + "".join(f"{i}.`{x[:20]}`\n" for i,x in enumerate(m,1))
-        kb = [[InlineKeyboardButton("➕ Add", callback_data='add_message'), InlineKeyboardButton("🗑 Del", callback_data='delete_message_menu')],
-              [InlineKeyboardButton("🔄 Reset", callback_data='reset_messages')],
-              [InlineKeyboardButton("Back", callback_data='settings')]]
-        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data == 'add_message': c.user_data['awaiting'] = 'add_message'; await q.edit_message_text("✏️ New message:", reply_markup=BACK_KB)
-    elif q.data == 'delete_message_menu':
-        m = load_messages_for(uid)
-        if not m: await q.edit_message_text("❌ none", reply_markup=BACK_KB); return
-        kb = [[InlineKeyboardButton(f"{i+1}.{x[:15]}", callback_data=f'del_msg_{i}')] for i,x in enumerate(m)]
-        kb.append([InlineKeyboardButton("Back", callback_data='message_list')])
-        await q.edit_message_text("Which?", reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data.startswith('del_msg_'):
-        m = load_messages_for(uid); i = int(q.data.replace('del_msg_',''))
-        if 0 <= i < len(m): m.pop(i); save_messages_for(uid, m)
-        await q.edit_message_text("Deleted", reply_markup=BACK_KB)
-    elif q.data == 'reset_messages': save_messages_for(uid, [MESSAGE]); await q.edit_message_text("Reset", reply_markup=BACK_KB)
-    elif q.data == 'edit_speed':
-        if not is_owner(uid): return
-        kb = [[InlineKeyboardButton(f"Min {MIN_INTERVAL}s", callback_data='set_min'), InlineKeyboardButton(f"Max {MAX_INTERVAL}s", callback_data='set_max')],
-              [InlineKeyboardButton(f"Cycle {CYCLE_WAIT}s", callback_data='set_cycle')],
-              [InlineKeyboardButton("Back", callback_data='settings')]]
-        await q.edit_message_text("⏱️ Speed", reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data == 'set_min':
-        if not is_owner(uid): return
-        c.user_data['awaiting'] = 'min'; await q.edit_message_text(f"Min (1-{MAX_INTERVAL-1}):", reply_markup=BACK_KB)
-    elif q.data == 'set_max':
-        if not is_owner(uid): return
-        c.user_data['awaiting'] = 'max'; await q.edit_message_text(f"Max (>{MIN_INTERVAL}):", reply_markup=BACK_KB)
-    elif q.data == 'set_cycle':
-        if not is_owner(uid): return
-        c.user_data['awaiting'] = 'cycle'; await q.edit_message_text("Cycle (5+):", reply_markup=BACK_KB)
-    elif q.data == 'phone_login':
+        tt = int(d.replace('del_admin_',''))
+        save_admins([a for a in load_admins() if a['user_id'] != tt]); stop_accounts_of(tt)
+        await q.edit_message_text(f"✅ Admin {tt} deleted!", reply_markup=BACK_KB)
+    elif d == 'phone_login':
         c.user_data['awaiting'] = 'phone_number'
         await q.edit_message_text("📱 *Phone Login*\n\nNumber pathao (e.g. `+8801XXXXXXXXX`):", parse_mode='Markdown', reply_markup=BACK_KB)
-    elif q.data == 'add_account':
+    elif d == 'add_account':
         c.user_data['awaiting'] = 'add_account'; await q.edit_message_text("Session string pathao:", reply_markup=BACK_KB)
-    elif q.data == 'delete_account':
+    elif d == 'delete_account':
         accs = get_all_accounts(uid)
         if not accs: await q.edit_message_text("❌ none", reply_markup=BACK_KB); return
         kb = []
@@ -686,18 +822,18 @@ async def button_click(u, c):
             kb.append([InlineKeyboardButton(f"{ti} #{i} {get_display_name(a)[:22]}", callback_data=f'del_acc_{a["id"]}')])
         kb += [[InlineKeyboardButton("🗑 Delete ALL", callback_data='del_all_accounts'), InlineKeyboardButton("Back", callback_data='back_main')]]
         await q.edit_message_text("Delete which?", reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data == 'del_all_accounts':
-        d = [a for a in get_all_accounts(uid) if a.get('type') != 'env']
+    elif d == 'del_all_accounts':
+        dd = [a for a in get_all_accounts(uid) if a.get('type') != 'env']
         kb = [[InlineKeyboardButton("☠️ YES", callback_data='del_all_confirm'), InlineKeyboardButton("No", callback_data='delete_account')]]
-        await q.edit_message_text(f"Delete {len(d)} accounts?", reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data == 'del_all_confirm':
+        await q.edit_message_text(f"Delete {len(dd)} accounts?", reply_markup=InlineKeyboardMarkup(kb))
+    elif d == 'del_all_confirm':
         n = 0
         for a in get_all_accounts(uid):
             if a.get('type') == 'env': continue
             stop_account(a['id']); remove_account_by_id(a['id']); await disconnect_client(a['id']); n += 1
         await q.edit_message_text(f"✅ {n} deleted!", reply_markup=BACK_KB)
-    elif q.data.startswith('del_acc_'):
-        acc_id = q.data.replace('del_acc_',''); t = None
+    elif d.startswith('del_acc_'):
+        acc_id = d.replace('del_acc_',''); t = None
         for a in get_all_accounts(uid):
             if a['id'] == acc_id: t = a; break
         if not t: await q.edit_message_text("⛔ invalid", reply_markup=BACK_KB); return
@@ -706,10 +842,37 @@ async def button_click(u, c):
         remove_account_by_id(acc_id); await disconnect_client(acc_id)
         for dd in (account_stats, stop_flags, running_tasks, display_names): dd.pop(acc_id, None)
         await q.edit_message_text(f"✅ {nm} deleted!", reply_markup=BACK_KB)
-    elif q.data == 'back_main':
+    elif d == 'back_main':
         c.user_data['awaiting'] = None; c.user_data.pop('login_id', None)
         refresh_account_stats(uid); preload_display_names(get_all_accounts(uid))
         await q.edit_message_text(main_menu_text(uid), parse_mode='Markdown', reply_markup=main_menu_keyboard(uid))
+
+# ── NEW: broadcast receiver ──
+async def do_broadcast(replier, msg_obj, uid, caption="", media_type=None):
+    """Owner sends to all valid admins."""
+    if not is_owner(uid): return
+    targets = broadcast_targets()
+    if not targets:
+        try: await replier.reply_text("❌ No admins", reply_markup=BACK_KB)
+        except: pass
+        return
+    ok = 0; bot = None
+    # find application bot instance through msg_obj's context is unavailable here; build via message
+    try:
+        # replier.c.bot if we pass context; we pass 'c'-less here — use message's bot via internal
+        # Simplest: locate bot from an attached application won't exist, so get file_ids forwarded to chat via sendCopy? 
+        pass
+    except: pass
+    for t in targets:
+        try:
+            if media_type == 'photo': await msg_obj.bot.send_photo(chat_id=t, photo=msg_obj.photo[-1].file_id, caption=caption)
+            elif media_type == 'video': await msg_obj.bot.send_video(chat_id=t, video=msg_obj.video.file_id, caption=caption)
+            elif media_type == 'animation': await msg_obj.bot.send_animation(chat_id=t, animation=msg_obj.animation.file_id, caption=caption)
+            else: await msg_obj.bot.send_message(chat_id=t, text=caption)
+            ok += 1
+        except Exception as e: logger.error(f"bc:{e}")
+    try: await replier.reply_text(f"📢 Sent to {ok}/{len(targets)} admins", reply_markup=BACK_KB)
+    except: pass
 
 async def handle_photo(u, c):
     uid = u.effective_user.id
@@ -718,46 +881,46 @@ async def handle_photo(u, c):
         cfg = get_default_profile(); ph = cfg.get('photos',[]); ph.append(u.message.photo[-1].file_id)
         cfg['photos'] = ph; save_default_profile(cfg); c.user_data['awaiting'] = None
         await u.message.reply_text(f"✅ Logo #{len(ph)} saved!", reply_markup=BACK_KB)
+        return
+    if c.user_data.get('awaiting') == 'broadcast_capture' and is_owner(uid):
+        if u.message.video:
+            c.user_data['awaiting'] = None
+            await do_broadcast(u.message, u.message, uid, u.message.caption or "", 'video')
+        elif u.message.photo:
+            c.user_data['awaiting'] = None
+            await do_broadcast(u.message, u.message, uid, u.message.caption or "", 'photo')
+        elif u.message.animation:
+            c.user_data['awaiting'] = None
+            await do_broadcast(u.message, u.message, uid, u.message.caption or "", 'animation')
 
 async def handle_text(u, c):
     uid = u.effective_user.id
     if not (is_owner(uid) or is_valid_admin(uid)): return
     text = u.message.text.strip(); aw = c.user_data.get('awaiting')
 
-    # ── Add/Edit admin time (owner) ──
+    # NEW: /cancel resets any flow
+    if text in ('/cancel','cancel'):
+        c.user_data['awaiting'] = None; c.user_data.pop('login_id', None)
+        await u.message.reply_text("Cancelled", reply_markup=BACK_KB); return
+
+    # NEW: text broadcast
+    if aw == 'broadcast_capture' and is_owner(uid):
+        c.user_data['awaiting'] = None
+        await do_broadcast(u.message, u.message, uid, text)
+        return
+
+    # Add/Edit admin time (owner, text form)
     if aw == 'add_admin':
         c.user_data['awaiting'] = None
         if not is_owner(uid): return
         try: target, op, nd = parse_admin_cmd(text)
         except Exception:
             await u.message.reply_text("❌ e.g. `123456789 +30d` / `-10d` / `=perm`", parse_mode='Markdown'); return
-        now = datetime.now()
         if target == OWNER_ID: await u.message.reply_text("❌ owner already boss"); return
-        admins = load_admins(); a = get_admin(target)
-        if a is None:
-            a = {'user_id':target,'expires_at':None if nd is None else nd.isoformat(),
-                 'added_at':now.isoformat(),'updated_at':now.isoformat(),'max_accounts':DEFAULT_ADMIN_LIMIT}
-            admins.append(a); save_admins(admins)
-            await u.message.reply_text(f"✅ Admin `{target}` added! ⏳ {remaining_time_str(a['expires_at'])}", parse_mode='Markdown'); return
-        if nd is None:
-            if op == '-': a['expires_at'] = now.isoformat(); chg = "expired now"
-            else: a['expires_at'] = None; chg = "♾️ Permanent"
-        else:
-            cur = None
-            try: cur = datetime.fromisoformat(a['expires_at']) if a.get('expires_at') else None
-            except: cur = None
-            rem = (cur - now) if (cur and cur > now) else timedelta(0)
-            dl = nd - now
-            if op == '=': ne = nd
-            elif op == '-':
-                ne = now + (rem - dl)
-                if ne < now: ne = now
-            else: ne = (max(now, cur) if cur else now) + dl
-            a['expires_at'] = ne.isoformat(); chg = remaining_time_str(a['expires_at'])
-        a['updated_at'] = now.isoformat(); save_admins(admins)
-        await u.message.reply_text(f"✅ `{target}` → ⏳ {chg}", parse_mode='Markdown', reply_markup=BACK_KB); return
+        await apply_admin_time(target, op, nd, text_ui=u.message)
+        return
 
-    # ── account limit (owner) ──
+    # account limit (owner)
     if aw == 'admin_limit':
         c.user_data['awaiting'] = None
         if not is_owner(uid): return
@@ -773,7 +936,7 @@ async def handle_text(u, c):
         save_admins(admins)
         await u.message.reply_text(f"✅ `{t}` limit: {'unlimited' if cap == 0 else str(cap)}", parse_mode='Markdown', reply_markup=BACK_KB); return
 
-    # ── profile inputs ──
+    # profile inputs
     if aw == 'def_add_name':
         c.user_data['awaiting'] = None; cfg = get_default_profile(); nm = cfg.get('names',[])
         nn = [x.strip() for x in text.split('\n') if x.strip()]; nm += nn; cfg['names'] = nm; save_default_profile(cfg)
@@ -789,7 +952,7 @@ async def handle_text(u, c):
         c.user_data['awaiting'] = None; m = load_messages_for(uid); m.append(text); save_messages_for(uid, m)
         await u.message.reply_text(f"✅ {len(m)} msgs", reply_markup=BACK_KB); return
 
-    # ── PHONE LOGIN: number (full try/except, always ack) ──
+    # PHONE number
     if aw == 'phone_number':
         c.user_data['awaiting'] = None
         try:
@@ -801,7 +964,6 @@ async def handle_text(u, c):
             if reached: await u.message.reply_text(rm, parse_mode='Markdown'); return
             if not API_ID_1 or not API_HASH_1:
                 await u.message.reply_text("❌ API env missing!", parse_mode='Markdown'); return
-            # clean stale states for this user
             for ok in [k for k, v in phone_login_states.items() if v.get('owner_id') == uid]:
                 old = phone_login_states.pop(ok, None)
                 if old.get('client'):
@@ -835,10 +997,9 @@ async def handle_text(u, c):
             except: pass
         return
 
-    # ── OTP code ──
+    # OTP code
     if aw == 'otp_code':
-        lid = c.user_data.get('login_id')
-        st = phone_login_states.get(lid) if lid else None
+        lid = c.user_data.get('login_id'); st = phone_login_states.get(lid) if lid else None
         if not st:
             c.user_data['awaiting'] = None
             await u.message.reply_text("⏳ Flow reset. Abar Phone Login koro.", reply_markup=BACK_KB); return
@@ -861,7 +1022,6 @@ async def handle_text(u, c):
             return
         except Exception as e:
             await sm.edit_text(f"❌ {str(e)[:150]}", reply_markup=BACK_KB); return
-        # build clean session fresh (prevents re-used-hash errors on next run)
         me = None; fresh = None
         try: await client.disconnect()
         except: pass
@@ -889,7 +1049,7 @@ async def handle_text(u, c):
         await sm.edit_text(f"✅ Login success!\n👤 {fname}\n🆔 `{getattr(me,'id','?')}`", parse_mode='Markdown', reply_markup=BACK_KB)
         return
 
-    # ── 2FA ──
+    # 2FA
     if aw == '2fa_password':
         lid = c.user_data.get('login_id'); st = phone_login_states.get(lid) if lid else None
         if not st:
@@ -912,10 +1072,10 @@ async def handle_text(u, c):
         save_auth_sessions(au); display_names[nid] = fname
         c.user_data['awaiting'] = None; c.user_data.pop('login_id', None)
         phone_login_states.pop(lid, None); refresh_account_stats(st['owner_id'])
-        await sm.edit_text(f"✅ 2FA done! 👤 {fname}", parse_mode='Markdown', reply_markup=BACK_KB)
+        await sm.edit_text(f"✅ 2FA done! 👤 {fname}", reply_markup=BACK_KB)
         return
 
-    # ── Manual session add ──
+    # Manual session add
     if aw == 'add_account':
         c.user_data['awaiting'] = None
         try:
@@ -930,33 +1090,34 @@ async def handle_text(u, c):
         except Exception as e: await u.message.reply_text(f"❌ {str(e)[:160]}", reply_markup=BACK_KB)
         return
 
-    # ── speed (owner) ──
-    if aw in ('min','max','cycle') and not is_owner(uid): c.user_data['awaiting'] = None; return
-    if aw == 'min':
+    # ── NEW: per-user speed edits (valid for owner AND admins) ──
+    if aw == 'set_min':
         c.user_data['awaiting'] = None
+        mn, mx, cyc = speed_for(uid)
         try:
             v = int(text)
-            if 1 <= v < MAX_INTERVAL: MIN_INTERVAL = v; save_data(); await u.message.reply_text(f"Min {v}s")
-            else: await u.message.reply_text(f"1-{MAX_INTERVAL-1}")
+            if 1 <= v < mx: set_speed(uid, min_i=v); mn2,_,_=speed_for(uid); await u.message.reply_text(f"Min {mn2}s (only yours)")
+            else: await u.message.reply_text(f"1-{mx-1}")
         except: await u.message.reply_text("❌ number")
-    elif aw == 'max':
+    elif aw == 'set_max':
         c.user_data['awaiting'] = None
+        mn, mx, cyc = speed_for(uid)
         try:
             v = int(text)
-            if v > MIN_INTERVAL: MAX_INTERVAL = v; save_data(); await u.message.reply_text(f"Max {v}s")
-            else: await u.message.reply_text(f">{MIN_INTERVAL}")
+            if v > mn: set_speed(uid, max_i=v); _,mx2,_=speed_for(uid); await u.message.reply_text(f"Max {mx2}s (only yours)")
+            else: await u.message.reply_text(f">{mn}")
         except: await u.message.reply_text("❌ number")
-    elif aw == 'cycle':
+    elif aw == 'set_cycle':
         c.user_data['awaiting'] = None
         try:
             v = int(text)
-            if v >= 5: CYCLE_WAIT = v; save_data(); await u.message.reply_text(f"Cycle {v}s")
+            if v >= 5: set_speed(uid, cycle=v); _,_,cyc2=speed_for(uid); await u.message.reply_text(f"Cycle {cyc2}s (only yours)")
             else: await u.message.reply_text(">=5")
         except: await u.message.reply_text("❌ number")
 
 async def main():
     global SHOW_START_TO_OTHERS
-    print("BOT v5.1 START...", flush=True)
+    print("BOT v6.0 START...", flush=True)
     await init_env_accounts()
     try: SHOW_START_TO_OTHERS = json.load(open(data_file)).get('show_start_to_others', True)
     except: pass
@@ -973,9 +1134,10 @@ async def main():
         try: httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"); break
         except: await asyncio.sleep(2)
     app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("cancel", lambda u,c: handle_text(u,c)))  # note: needs text; handle via text path too
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CallbackQueryHandler(button_click))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.ANIMATION, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     await app.initialize(); await app.start()
     asyncio.create_task(admin_expiry_checker())
