@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Telegram Mass Messaging Bot v7.1
-- Privacy: Calls=NOBODY, Photo=EveryBODY, Bio=Everybody
+Telegram Mass Messaging Bot v7.2
+- Fixed: line 895 syntax error (missing newline)
+- Privacy: Calls=NOBODY, Photo=Everybody, Bio=Everybody
 - Name change: clears last_name then sets new name
 - Mute all dialogs (peer-wise)
 - Normal + Super Fast speed
@@ -578,7 +579,7 @@ def home():
     all_a = get_all_accounts()
     run = sum(1 for a in all_a if account_stats.get(a['id'], {}).get('running', False))
     sent = sum(account_stats.get(a['id'], {}).get('sent', 0) for a in all_a)
-    return f"v7.1 | Accounts:{len(all_a)} | Active:{run}/{len(all_a)} | Sent:{sent} | Admins:{len(load_admins())}"
+    return f"v7.2 | Accounts:{len(all_a)} | Active:{run}/{len(all_a)} | Sent:{sent} | Admins:{len(load_admins())}"
 
 
 @web_app.route("/health")
@@ -817,11 +818,13 @@ async def run_account_messaging(acc, owner):
             persist_rename(aid, me.first_name)
         if not client.is_user_authorized():
             await notify_user(owner, f"🚨 *SESSION DEAD*\n{get_display_name(acc)}")
-            stop_account(aid); return
+            stop_account(aid)
+            return
         res, reason = await is_account_restricted(client)
         if res:
             await notify_user(owner, f"🚨 *RESTRICTED*\n{get_display_name(acc)}")
-            stop_account(aid); return
+            stop_account(aid)
+            return
         groups = await get_groups(client)
         if not groups:
             await notify_user(owner, f"⚠️ {get_display_name(acc)} - no groups")
@@ -832,7 +835,8 @@ async def run_account_messaging(acc, owner):
         failed = set()
         while not stop_flags.get(aid, False):
             if not is_owner(owner) and not is_valid_admin(owner):
-                stop_account(aid); return
+                stop_account(aid)
+                return
 
             mn, mx, cyc = speed_for(owner)
             is_super_fast = (mn <= 0.2)
@@ -866,7 +870,8 @@ async def run_account_messaging(acc, owner):
             res, reason = await is_account_restricted(client)
             if res:
                 await notify_user(owner, f"🚨 *RESTRICTED*\n{get_display_name(acc)}")
-                stop_account(aid); return
+                stop_account(aid)
+                return
             if stop_flags.get(aid): break
             failed = set()
             cycle += 1
@@ -892,7 +897,8 @@ async def run_account_messaging(acc, owner):
         await notify_user(owner, f"❌ Fatal: `{str(e)[:150]}`")
     finally:
         await disconnect_client(aid)
-        account_stats[aid]['running'] = False        stop_flags[aid] = True
+        account_stats[aid]['running'] = False
+        stop_flags[aid] = True
 
 
 def stop_account(aid):
@@ -1050,7 +1056,7 @@ def main_menu_text(u):
         extra = exp + lim
     bk = get_user_backup(u)
     bk_line = f"\n🌙 Backup: {'🟢 ON' if bk.get('enabled') else '🔴 OFF'}" if bk.get('backup_ids') else ""
-    return (f"*Bot v7.1*\n{role}{extra}\n\n"
+    return (f"*Bot v7.2*\n{role}{extra}\n\n"
             f"📊 Accounts: {len(accs)} (Running: {run})\n"
             f"⚡ Speed: {fast} ({mn}-{mx}s | Cycle: {cyc}s){bk_line}\n📨 Sent: {sent}")
 
@@ -2187,7 +2193,7 @@ async def main():
         try:
             await app.updater.start_polling(drop_pending_updates=True, timeout=30, read_timeout=30,
                                             connect_timeout=30, allowed_updates=Update.ALL_TYPES)
-            print("✅ BOT RUNNING v7.1", flush=True)
+            print("✅ BOT RUNNING v7.2", flush=True)
             ok = True
             break
         except Exception as e:
