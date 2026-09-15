@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Telegram Mass Messaging Bot v7.0
-- Normal + Super Fast speed mode
-- Backup section (auto-switch at scheduled IST time)
-- Auto-delete backup config
-- Privacy settings: Call: Nobody, Last seen: Contacts
-- Mute all notifications
-- Apply profile to ALL or ONE account
+Telegram Mass Messaging Bot v7.1
+- Privacy: Calls=NOBODY, Photo=EveryBODY, Bio=Everybody
+- Name change: clears last_name then sets new name
+- Mute all dialogs (peer-wise)
+- Normal + Super Fast speed
+- Backup auto-switch
 """
 import sys, os, asyncio, random, logging, json, threading, httpx, re, uuid
 from datetime import datetime, timedelta
@@ -27,6 +26,7 @@ from telethon.tl.types import (
     InputPrivacyKeyStatusTimestamp, InputPrivacyValueAllowContacts,
     InputPrivacyKeyPhoneNumber, InputPrivacyValueAllowContacts,
     InputPrivacyKeyProfilePhoto, InputPrivacyValueAllowAll,
+    InputPrivacyKeyAbout, InputPrivacyValueAllowAll,
     InputPrivacyKeyChatInvite, InputPrivacyValueAllowAll,
     InputPeerNotifySettings,
 )
@@ -38,11 +38,25 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
                     force=True, handlers=[logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
-API_ID_1 = int(os.environ.get("API_ID_1", "0")); API_HASH_1 = os.environ.get("API_HASH_1", ""); SESSION_1 = os.environ.get("SESSION_1", "")
-API_ID_2 = int(os.environ.get("API_ID_2", "0")); API_HASH_2 = os.environ.get("API_HASH_2", ""); SESSION_2 = os.environ.get("SESSION_2", "")
-API_ID_3 = int(os.environ.get("API_ID_3", "0")); API_HASH_3 = os.environ.get("API_HASH_3", ""); SESSION_3 = os.environ.get("SESSION_3", "")
+
+def _si(v, d=0):
+    try:
+        return int(str(v).strip()) if v not in (None, "") else d
+    except Exception:
+        return d
+
+
+BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
+OWNER_ID = _si(os.environ.get("OWNER_ID"), 0)
+API_ID_1 = _si(os.environ.get("API_ID_1"), 0)
+API_HASH_1 = (os.environ.get("API_HASH_1") or "").strip()
+SESSION_1 = (os.environ.get("SESSION_1") or "").strip()
+API_ID_2 = _si(os.environ.get("API_ID_2"), 0)
+API_HASH_2 = (os.environ.get("API_HASH_2") or "").strip()
+SESSION_2 = (os.environ.get("SESSION_2") or "").strip()
+API_ID_3 = _si(os.environ.get("API_ID_3"), 0)
+API_HASH_3 = (os.environ.get("API_HASH_3") or "").strip()
+SESSION_3 = (os.environ.get("SESSION_3") or "").strip()
 
 DYNAMIC_ACCOUNTS_FILE = "dynamic_accounts.json"
 AUTH_SESSIONS_FILE = "auth_sessions.json"
@@ -53,9 +67,9 @@ DEFAULT_PROFILE_KEY = "__default__"
 USER_SPEED_FILE = "user_speed.json"
 BACKUP_FILE = "backups.json"
 MESSAGE = os.environ.get("MESSAGE", "𝟭𝟬 𝗠𝗜𝗡 𝗩𝗖")
-MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "6"))
-MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "10"))
-CYCLE_WAIT = int(os.environ.get("CYCLE_WAIT", "45"))
+MIN_INTERVAL = _si(os.environ.get("MIN_INTERVAL"), 6)
+MAX_INTERVAL = _si(os.environ.get("MAX_INTERVAL"), 10)
+CYCLE_WAIT = _si(os.environ.get("CYCLE_WAIT"), 45)
 
 running_tasks, stop_flags, account_clients, account_stats, phone_login_states, display_names = {}, {}, {}, {}, {}, {}
 data_file = "bot_data.json"
@@ -211,8 +225,9 @@ def parse_duration_delta(s):
     return total if found else None
 
 
-# ============ PRIVACY / NOTIFICATIONS ============
+# ============ PRIVACY & NOTIFICATIONS ============
 async def apply_privacy_settings(client):
+    """Call: Nobody | Photo: Everybody | Bio: Everybody | Seen: Contacts | Phone: Contacts"""
     results = []
     try:
         await client(SetPrivacyRequest(
@@ -224,10 +239,26 @@ async def apply_privacy_settings(client):
         results.append(f"❌ Call: {str(e)[:40]}")
     try:
         await client(SetPrivacyRequest(
+            key=InputPrivacyKeyProfilePhoto(),
+            rules=[InputPrivacyValueAllowAll()]
+        ))
+        results.append("🖼️ Photo: Everybody")
+    except Exception as e:
+        results.append(f"❌ Photo: {str(e)[:40]}")
+    try:
+        await client(SetPrivacyRequest(
+            key=InputPrivacyKeyAbout(),
+            rules=[InputPrivacyValueAllowAll()]
+        ))
+        results.append("📄 Bio: Everybody")
+    except Exception as e:
+        results.append(f"❌ Bio: {str(e)[:40]}")
+    try:
+        await client(SetPrivacyRequest(
             key=InputPrivacyKeyStatusTimestamp(),
             rules=[InputPrivacyValueAllowContacts()]
         ))
-        results.append("👁️ Last seen: Contacts")
+        results.append("👁️ Seen: Contacts")
     except Exception:
         pass
     try:
@@ -242,6 +273,7 @@ async def apply_privacy_settings(client):
 
 
 async def mute_all_notifications(client):
+    """Mute all dialogs (peer-wise)."""
     muted = 0
     try:
         async for dialog in client.iter_dialogs(limit=500):
@@ -546,7 +578,7 @@ def home():
     all_a = get_all_accounts()
     run = sum(1 for a in all_a if account_stats.get(a['id'], {}).get('running', False))
     sent = sum(account_stats.get(a['id'], {}).get('sent', 0) for a in all_a)
-    return f"v7.0 | Accounts:{len(all_a)} | Active:{run}/{len(all_a)} | Sent:{sent} | Admins:{len(load_admins())}"
+    return f"v7.1 | Accounts:{len(all_a)} | Active:{run}/{len(all_a)} | Sent:{sent} | Admins:{len(load_admins())}"
 
 
 @web_app.route("/health")
@@ -655,18 +687,27 @@ async def join_link(client, link):
 
 
 async def apply_profile(acc, name, photo, bio, channels, bot=None, apply_privacy=True):
+    """Name: clears last_name then sets new name | Privacy | Mute | Bio | Photo | Channels"""
     r = []
     aid = acc['id']
     client = await get_client(acc)
-    if not client.is_user_authorized(): return ["❌ Session is dead!"]
+    if not client.is_user_authorized():
+        return ["❌ Session is dead!"]
+
+    # ===== NAME: clear last_name, set first_name =====
     if name:
         try:
-            await client(UpdateProfileRequest(first_name=name))
-            r.append("✅ Name")
+            await client(UpdateProfileRequest(
+                first_name=name,
+                last_name=""
+            ))
+            r.append(f"✅ Name: {name}")
             persist_rename(aid, name)
         except Exception as e:
             r.append(f"❌ Name fail: {str(e)[:40]}")
         await asyncio.sleep(1)
+
+    # ===== BIO =====
     if bio:
         try:
             await client(UpdateProfileRequest(about=bio))
@@ -674,6 +715,8 @@ async def apply_profile(acc, name, photo, bio, channels, bot=None, apply_privacy
         except Exception as e:
             r.append(f"❌ Bio fail: {str(e)[:40]}")
         await asyncio.sleep(1)
+
+    # ===== PHOTO =====
     if photo:
         p = None
         try:
@@ -691,6 +734,8 @@ async def apply_profile(acc, name, photo, bio, channels, bot=None, apply_privacy
                 try: os.remove(p)
                 except: pass
         await asyncio.sleep(1)
+
+    # ===== CHANNELS =====
     for lk in channels:
         try:
             await join_link(client, lk)
@@ -698,6 +743,8 @@ async def apply_profile(acc, name, photo, bio, channels, bot=None, apply_privacy
         except Exception as e:
             r.append(f"❌ {lk} fail: {str(e)[:30]}")
         await asyncio.sleep(0.5)
+
+    # ===== PRIVACY + MUTE =====
     if apply_privacy:
         try:
             priv = await apply_privacy_settings(client)
@@ -709,6 +756,7 @@ async def apply_profile(acc, name, photo, bio, channels, bot=None, apply_privacy
             r.append(f"🔕 Muted: {muted} chats")
         except Exception as e:
             r.append(f"❌ Mute: {str(e)[:40]}")
+
     return r
 
 
@@ -844,8 +892,7 @@ async def run_account_messaging(acc, owner):
         await notify_user(owner, f"❌ Fatal: `{str(e)[:150]}`")
     finally:
         await disconnect_client(aid)
-        account_stats[aid]['running'] = False
-        stop_flags[aid] = True
+        account_stats[aid]['running'] = False        stop_flags[aid] = True
 
 
 def stop_account(aid):
@@ -1003,7 +1050,7 @@ def main_menu_text(u):
         extra = exp + lim
     bk = get_user_backup(u)
     bk_line = f"\n🌙 Backup: {'🟢 ON' if bk.get('enabled') else '🔴 OFF'}" if bk.get('backup_ids') else ""
-    return (f"*Bot v7.0*\n{role}{extra}\n\n"
+    return (f"*Bot v7.1*\n{role}{extra}\n\n"
             f"📊 Accounts: {len(accs)} (Running: {run})\n"
             f"⚡ Speed: {fast} ({mn}-{mx}s | Cycle: {cyc}s){bk_line}\n📨 Sent: {sent}")
 
@@ -1554,7 +1601,7 @@ async def button_click(u, c):
         if not is_owner(uid): return
         SHOW_START_TO_OTHERS = not SHOW_START_TO_OTHERS
         save_data()
-        await q.edit_message_text(f"👻 Start msg to non-admins: {'ON' if SHOW_START_TO_OTHERS else 'OFF'}", reply_markup=BACK_KB)
+        await q.edit_message_text(f"👻 Start msg: {'ON' if SHOW_START_TO_OTHERS else 'OFF'}", reply_markup=BACK_KB)
 
     elif d == 'admin_list':
         if not is_owner(uid): return
@@ -2140,7 +2187,7 @@ async def main():
         try:
             await app.updater.start_polling(drop_pending_updates=True, timeout=30, read_timeout=30,
                                             connect_timeout=30, allowed_updates=Update.ALL_TYPES)
-            print("✅ BOT RUNNING v7.0", flush=True)
+            print("✅ BOT RUNNING v7.1", flush=True)
             ok = True
             break
         except Exception as e:
