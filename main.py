@@ -1,24 +1,35 @@
 #!/usr/bin/env python3
 """
-Telegram Mass Messaging Bot v6.3
-- Admin add/edit supports combined SECONDS/MINUTES/HOURS/DAYS/WEEKS (e.g. 111 +2d 5h 30m)
-- Phone Login and Session Login are SEPARATE ROWS (upar-niche)
-- Admin NAME shown with ID in list / add / delete / edit (auto-captured on first contact)
-- English + emoji UI | Status inside Settings | Broadcast inside Admin Panel
-- per-user speed | isolated admin accounts | owner-only admin panel
+Telegram Mass Messaging Bot v7.0
+- Normal + Super Fast speed mode
+- Backup section (auto-switch at scheduled IST time)
+- Auto-delete backup config
+- Privacy settings: Call: Nobody, Last seen: Contacts
+- Mute all notifications
+- Apply profile to ALL or ONE account
 """
 import sys, os, asyncio, random, logging, json, threading, httpx, re, uuid
 from datetime import datetime, timedelta
 from telethon import TelegramClient, errors, functions
 from telethon.sessions import StringSession
-from telethon.tl.functions.account import UpdateProfileRequest
+from telethon.tl.functions.account import (
+    UpdateProfileRequest, SetPrivacyRequest, UpdateNotifySettingsRequest
+)
 from telethon.tl.functions.photos import UploadProfilePhotoRequest
 from telethon.errors import (
     FloodWaitError, SessionPasswordNeededError, PhoneCodeInvalidError,
     PhoneCodeExpiredError, UserRestrictedError, AuthKeyUnregisteredError,
     UserDeactivatedError, UserDeactivatedBanError)
 from telethon.tl.functions.messages import GetDialogsRequest
-from telethon.tl.types import InputPeerEmpty
+from telethon.tl.types import (
+    InputPeerEmpty,
+    InputPrivacyKeyPhoneCall, InputPrivacyValueDisallowAll,
+    InputPrivacyKeyStatusTimestamp, InputPrivacyValueAllowContacts,
+    InputPrivacyKeyPhoneNumber, InputPrivacyValueAllowContacts,
+    InputPrivacyKeyProfilePhoto, InputPrivacyValueAllowAll,
+    InputPrivacyKeyChatInvite, InputPrivacyValueAllowAll,
+    InputPeerNotifySettings,
+)
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 from flask import Flask
@@ -40,6 +51,7 @@ PROFILE_FILE = "profile_configs.json"
 NAME_FILE = "user_names.json"
 DEFAULT_PROFILE_KEY = "__default__"
 USER_SPEED_FILE = "user_speed.json"
+BACKUP_FILE = "backups.json"
 MESSAGE = os.environ.get("MESSAGE", "𝟭𝟬 𝗠𝗜𝗡 𝗩𝗖")
 MIN_INTERVAL = int(os.environ.get("MIN_INTERVAL", "6"))
 MAX_INTERVAL = int(os.environ.get("MAX_INTERVAL", "10"))
@@ -49,51 +61,214 @@ running_tasks, stop_flags, account_clients, account_stats, phone_login_states, d
 data_file = "bot_data.json"
 SHOW_START_TO_OTHERS = True
 
-# ---------------- User name registry (show Name + ID for admins) ----------------
+
+# ============ HELPERS ============
 def load_names():
     try: return json.load(open(NAME_FILE)) if os.path.exists(NAME_FILE) else {}
     except: return {}
+
+
 def save_names(d):
     try: json.dump(d, open(NAME_FILE, 'w'), indent=2)
     except: pass
+
+
 def record_user_info(uid, first="", last="", username=""):
     d = load_names()
     old = d.get(str(uid), {})
     full = (str(first or '').strip())
     if last: full = f"{full} {last}".strip()
-    d[str(uid)] = {'name': (full or old.get('name','')),
-                   'username': (username or old.get('username',''))}
+    d[str(uid)] = {'name': (full or old.get('name', '')),
+                   'username': (username or old.get('username', ''))}
     save_names(d)
+
+
 def admin_label(uid):
     info = load_names().get(str(uid))
     if info and info.get('name'):
         return f"{info['name']} (ID: {uid})"
     return f"ID: {uid}"
 
-# ---------------- Per-user speed ----------------
+
+def get_names_short(uid):
+    info = load_names().get(str(uid))
+    if info and info.get('name'):
+        return info['name'][:14]
+    return str(uid)
+
+
+# ============ SPEED ============
 def load_user_speeds():
     try: return json.load(open(USER_SPEED_FILE)) if os.path.exists(USER_SPEED_FILE) else {}
     except: return {}
+
+
 def save_user_speeds(data):
     try: json.dump(data, open(USER_SPEED_FILE, 'w'), indent=2)
     except: pass
+
+
 def speed_for(uid):
     s = load_user_speeds().get(str(uid))
-    if not s: return (MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT)
-    return (s.get('min', MIN_INTERVAL), s.get('max', MAX_INTERVAL), s.get('cycle', CYCLE_WAIT))
+    if not s:
+        return (MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT)
+    mn = s.get('min', MIN_INTERVAL)
+    mx = s.get('max', MAX_INTERVAL)
+    cyc = s.get('cycle', CYCLE_WAIT)
+    try: mn = float(mn)
+    except: mn = float(MIN_INTERVAL)
+    try: mx = float(mx)
+    except: mx = float(MAX_INTERVAL)
+    try: cyc = float(cyc)
+    except: cyc = float(CYCLE_WAIT)
+    return (mn, mx, cyc)
+
+
 def set_speed(uid, min_i=None, max_i=None, cycle=None):
-    d = load_user_speeds(); s = d.setdefault(str(uid), {})
-    if min_i is not None: s['min'] = min_i
-    if max_i is not None: s['max'] = max_i
-    if cycle is not None: s['cycle'] = cycle
+    d = load_user_speeds()
+    s = d.setdefault(str(uid), {})
+    if min_i is not None: s['min'] = float(min_i)
+    if max_i is not None: s['max'] = float(max_i)
+    if cycle is not None: s['cycle'] = float(cycle)
     save_user_speeds(d)
 
+
+# ============ BACKUP ============
+def load_backups():
+    try:
+        return json.load(open(BACKUP_FILE)) if os.path.exists(BACKUP_FILE) else {}
+    except Exception:
+        return {}
+
+
+def save_backups(d):
+    try: json.dump(d, open(BACKUP_FILE, 'w'), indent=2)
+    except: pass
+
+
+def get_user_backup(uid):
+    b = load_backups().get(str(uid))
+    if not b:
+        b = {
+            'enabled': False,
+            'backup_ids': [],
+            'start_time': '03:00',
+            'end_time': '09:00',
+            'delete_after': None,
+            'last_run_date': None,
+        }
+    return b
+
+
+def set_user_backup(uid, cfg):
+    d = load_backups()
+    d[str(uid)] = cfg
+    save_backups(d)
+
+
+def parse_hhmm(s):
+    try:
+        h, m = s.strip().split(':')
+        h = int(h); m = int(m)
+        if 0 <= h < 24 and 0 <= m < 60:
+            return h, m
+    except Exception:
+        pass
+    return None
+
+
+def ist_now():
+    return datetime.utcnow() + timedelta(hours=5, minutes=30)
+
+
+def in_backup_window(cfg):
+    start = parse_hhmm(cfg.get('start_time', '03:00'))
+    end = parse_hhmm(cfg.get('end_time', '09:00'))
+    if not start or not end:
+        return False
+    now = ist_now()
+    now_min = now.hour * 60 + now.minute
+    s_min = start[0] * 60 + start[1]
+    e_min = end[0] * 60 + end[1]
+    if s_min <= e_min:
+        return s_min <= now_min < e_min
+    else:
+        return now_min >= s_min or now_min < e_min
+
+
+def parse_duration_delta(s):
+    s = s.strip().lower()
+    total = timedelta()
+    found = False
+    for num, unit in re.findall(r'(\d+)\s*([dhms])?', s):
+        n = int(num)
+        unit = unit or 'm'
+        if unit == 'd': total += timedelta(days=n)
+        elif unit == 'h': total += timedelta(hours=n)
+        elif unit == 's': total += timedelta(seconds=n)
+        else: total += timedelta(minutes=n)
+        found = True
+    return total if found else None
+
+
+# ============ PRIVACY / NOTIFICATIONS ============
+async def apply_privacy_settings(client):
+    results = []
+    try:
+        await client(SetPrivacyRequest(
+            key=InputPrivacyKeyPhoneCall(),
+            rules=[InputPrivacyValueDisallowAll()]
+        ))
+        results.append("📵 Calls: Nobody")
+    except Exception as e:
+        results.append(f"❌ Call: {str(e)[:40]}")
+    try:
+        await client(SetPrivacyRequest(
+            key=InputPrivacyKeyStatusTimestamp(),
+            rules=[InputPrivacyValueAllowContacts()]
+        ))
+        results.append("👁️ Last seen: Contacts")
+    except Exception:
+        pass
+    try:
+        await client(SetPrivacyRequest(
+            key=InputPrivacyKeyPhoneNumber(),
+            rules=[InputPrivacyValueAllowContacts()]
+        ))
+        results.append("📱 Phone: Contacts")
+    except Exception:
+        pass
+    return results
+
+
+async def mute_all_notifications(client):
+    muted = 0
+    try:
+        async for dialog in client.iter_dialogs(limit=500):
+            try:
+                await client(UpdateNotifySettingsRequest(
+                    peer=dialog.input_entity,
+                    settings=InputPeerNotifySettings(
+                        show_previews=False, silent=True, mute_until=2147483647
+                    )
+                ))
+                muted += 1
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"mute_all err: {e}")
+    return muted
+
+
+# ============ ADMINS ============
 try:
     _e = os.environ.get("ADMIN_ACCOUNT_LIMIT", "").strip()
     DEFAULT_ADMIN_LIMIT = int(_e) if _e else None
 except Exception:
     DEFAULT_ADMIN_LIMIT = None
+
 BACK_KB = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='back_main')]])
+
 
 def broadcast_targets():
     ids = [OWNER_ID]
@@ -102,23 +277,36 @@ def broadcast_targets():
             ids.append(a['user_id'])
     return list(dict.fromkeys(ids))
 
+
 def is_owner(u): return u == OWNER_ID
+
+
 def load_admins():
     try: return json.load(open(ADMINS_FILE)) if os.path.exists(ADMINS_FILE) else []
     except: return []
+
+
 def save_admins(x):
     try: json.dump(x, open(ADMINS_FILE, 'w'), indent=2)
     except: pass
+
+
 def replace_admin(target, new_entry):
     admins = load_admins()
     for i, a in enumerate(admins):
         if a['user_id'] == target:
-            admins[i] = new_entry; break
+            admins[i] = new_entry
+            break
     save_admins(admins)
+
+
 def get_admin(u):
     for a in load_admins():
-        if a['user_id'] == u: return a
+        if a['user_id'] == u:
+            return a
     return None
+
+
 def is_valid_admin(u):
     a = get_admin(u)
     if not a: return False
@@ -126,6 +314,8 @@ def is_valid_admin(u):
     if not exp: return True
     try: return datetime.fromisoformat(exp) > datetime.now()
     except: return False
+
+
 def remaining_time_str(e):
     if not e: return "♾️ Permanent"
     try: d = datetime.fromisoformat(e) - datetime.now()
@@ -139,15 +329,15 @@ def remaining_time_str(e):
     if m: p.append(f"{m}m")
     return " ".join(p) + " left" if p else "<1s"
 
-# Combined multi-unit duration: '2d 5h 30m', '1w', '45s', etc.
+
 def parse_duration(t):
     t = t.strip().lower()
-    if t in ('perm','permanent','inf','unlimited','infinite'): return None
-    for a, b in [('seconds','s'),('second','s'),('secs','s'),('sec','s'),
-                 ('minutes','m'),('minute','m'),('mins','m'),('min','m'),
-                 ('hours','h'),('hour','h'),('hrs','h'),('hr','h'),
-                 ('days','d'),('day','d'),
-                 ('weeks','w'),('week','w')]:
+    if t in ('perm', 'permanent', 'inf', 'unlimited', 'infinite'): return None
+    for a, b in [('seconds', 's'), ('second', 's'), ('secs', 's'), ('sec', 's'),
+                 ('minutes', 'm'), ('minute', 'm'), ('mins', 'm'), ('min', 'm'),
+                 ('hours', 'h'), ('hour', 'h'), ('hrs', 'h'), ('hr', 'h'),
+                 ('days', 'd'), ('day', 'd'),
+                 ('weeks', 'w'), ('week', 'w')]:
         t = t.replace(a, b)
     total, found = timedelta(), False
     for num, unit in re.findall(r'(\d+)\s*([dhms w])?', t + ' '):
@@ -156,91 +346,127 @@ def parse_duration(t):
         unit = (unit or 'm').strip()
         if unit == 'd': total += timedelta(days=n)
         elif unit == 'h': total += timedelta(hours=n)
-        elif unit == 'w': total += timedelta(days=n*7)
+        elif unit == 'w': total += timedelta(days=n * 7)
         elif unit == 's': total += timedelta(seconds=n)
         else: total += timedelta(minutes=n)
         found = True
     if not found: raise ValueError("bad duration")
     return datetime.now() + total
 
+
 def parse_admin_cmd(t):
     pr = t.strip().split(None, 1)
     if not pr: raise ValueError("need USER_ID")
-    uid = int(pr[0]); rest = pr[1].strip() if len(pr) > 1 else 'perm'
+    uid = int(pr[0])
+    rest = pr[1].strip() if len(pr) > 1 else 'perm'
     op = '+'
     if rest and rest[0] in ('+', '-', '='):
-        op = rest[0]; rest = rest[1:].strip()
-    if not rest or rest.lower() in ('perm','permanent','inf','unlimited','infinite'):
+        op = rest[0]
+        rest = rest[1:].strip()
+    if not rest or rest.lower() in ('perm', 'permanent', 'inf', 'unlimited', 'infinite'):
         return uid, op, None
     return uid, op, parse_duration(rest)
 
+
 def gen_unique_id(p, o): return f"{p}_{o}_{uuid.uuid4().hex[:6]}"
+
+
 def messages_file_for(u): return "messages.json" if is_owner(u) else f"messages_{u}.json"
+
+
 def load_messages_for(u):
     f = messages_file_for(u)
     try: return json.load(open(f)) if os.path.exists(f) else []
     except: return []
+
+
 def save_messages_for(u, m):
     try: json.dump(m, open(messages_file_for(u), 'w'), indent=2)
     except: pass
+
+
 def get_random_message_for(u):
     m = load_messages_for(u)
     return random.choice(m) if m else MESSAGE
 
+
 def load_profiles():
     try: return json.load(open(PROFILE_FILE)) if os.path.exists(PROFILE_FILE) else {}
     except: return {}
+
+
 def save_profiles(p):
     try: json.dump(p, open(PROFILE_FILE, 'w'), indent=2)
     except: pass
+
+
 def get_default_profile(): return load_profiles().get(DEFAULT_PROFILE_KEY, {})
+
+
 def save_default_profile(cfg):
     p = load_profiles(); p[DEFAULT_PROFILE_KEY] = cfg; save_profiles(p)
+
 
 def load_auth_sessions():
     try: return json.load(open(AUTH_SESSIONS_FILE)) if os.path.exists(AUTH_SESSIONS_FILE) else []
     except: return []
+
+
 def save_auth_sessions(s):
     try: json.dump(s, open(AUTH_SESSIONS_FILE, 'w'), indent=2)
     except: pass
 
+
 ENV_ACCOUNTS = []
-acc_configs = [('acc1',API_ID_1,API_HASH_1,SESSION_1),('acc2',API_ID_2,API_HASH_2,SESSION_2),('acc3',API_ID_3,API_HASH_3,SESSION_3)]
+acc_configs = [('acc1', API_ID_1, API_HASH_1, SESSION_1), ('acc2', API_ID_2, API_HASH_2, SESSION_2), ('acc3', API_ID_3, API_HASH_3, SESSION_3)]
+
+
 async def init_env_accounts():
     for acc_id, api_id, api_hash, session in acc_configs:
         if api_id and api_hash and session:
             try:
                 c = TelegramClient(StringSession(session), api_id, api_hash, receive_updates=False)
-                await c.start(); me = await c.get_me()
-                n = me.first_name or f"User{me.id}"; await c.disconnect()
-                ENV_ACCOUNTS.append({'id':acc_id,'name':n,'api_id':api_id,'api_hash':api_hash,'session':session,
-                                     'type':'env','phone':getattr(me,'phone',''),'owner_id':OWNER_ID})
+                await c.start()
+                me = await c.get_me()
+                n = me.first_name or f"User{me.id}"
+                await c.disconnect()
+                ENV_ACCOUNTS.append({'id': acc_id, 'name': n, 'api_id': api_id, 'api_hash': api_hash, 'session': session,
+                                     'type': 'env', 'phone': getattr(me, 'phone', ''), 'owner_id': OWNER_ID})
                 display_names[acc_id] = n
             except Exception as e:
                 print(f"failed {acc_id}: {str(e)[:50]}", flush=True)
             await asyncio.sleep(1)
 
+
 def load_dynamic_accounts():
     try: return json.load(open(DYNAMIC_ACCOUNTS_FILE)) if os.path.exists(DYNAMIC_ACCOUNTS_FILE) else []
     except: return []
+
+
 def save_dynamic_accounts(a):
     try: json.dump(a, open(DYNAMIC_ACCOUNTS_FILE, 'w'), indent=2)
     except: pass
+
 
 def get_all_accounts(user_id=None):
     dyn = load_dynamic_accounts()
     auth = []
     for s in load_auth_sessions():
-        auth.append({'id':s['id'],'name':s.get('name',f"User_{s.get('user_id','?')}"),'api_id':s['api_id'],
-                     'api_hash':s['api_hash'],'session':s['session_string'],'type':'phone_auth',
-                     'phone':s.get('phone',''),'owner_id':s.get('owner_id',OWNER_ID)})
+        auth.append({'id': s['id'], 'name': s.get('name', f"User_{s.get('user_id','?')}"),
+                     'api_id': s['api_id'], 'api_hash': s['api_hash'], 'session': s['session_string'],
+                     'type': 'phone_auth', 'phone': s.get('phone', ''), 'owner_id': s.get('owner_id', OWNER_ID)})
     accs = ENV_ACCOUNTS + dyn + auth
     if user_id is None or user_id == OWNER_ID: return accs
     return [a for a in accs if a.get('owner_id') == user_id]
 
+
 def get_display_name(acc): return display_names.get(acc.get('id')) or acc.get('name') or str(acc.get('id'))
+
+
 def preload_display_names(accs):
     for acc in accs: display_names.setdefault(acc.get('id'), acc.get('name'))
+
+
 def persist_rename(acc_id, new_name):
     if not new_name: return
     display_names[acc_id] = new_name
@@ -256,74 +482,103 @@ def persist_rename(acc_id, new_name):
     for acc in ENV_ACCOUNTS:
         if acc['id'] == acc_id: acc['name'] = new_name
 
+
 def add_dynamic_account(name, ss, owner_id, api_id=0, api_hash=""):
     accs = load_dynamic_accounts()
     for a in accs:
         if a['session'] == ss: return False, "Session already exists!"
     nid = gen_unique_id("acc_dyn", owner_id)
-    accs.append({'id':nid,'name':name,'api_id':api_id or API_ID_1,'api_hash':api_hash or API_HASH_1,
-                 'session':ss,'type':'dynamic','owner_id':owner_id})
-    save_dynamic_accounts(accs); display_names[nid] = name
+    accs.append({'id': nid, 'name': name, 'api_id': api_id or API_ID_1, 'api_hash': api_hash or API_HASH_1,
+                 'session': ss, 'type': 'dynamic', 'owner_id': owner_id})
+    save_dynamic_accounts(accs)
+    display_names[nid] = name
     return True, nid
+
 
 def remove_account_by_id(aid):
     global ENV_ACCOUNTS
     dyn = load_dynamic_accounts()
     for i, a in enumerate(dyn):
-        if a['id'] == aid: dyn.pop(i); save_dynamic_accounts(dyn); display_names.pop(aid,None); return True
+        if a['id'] == aid:
+            dyn.pop(i); save_dynamic_accounts(dyn); display_names.pop(aid, None); return True
     au = load_auth_sessions()
     for i, a in enumerate(au):
-        if a['id'] == aid: au.pop(i); save_auth_sessions(au); display_names.pop(aid,None); return True
+        if a['id'] == aid:
+            au.pop(i); save_auth_sessions(au); display_names.pop(aid, None); return True
     for i, a in enumerate(ENV_ACCOUNTS):
-        if a['id'] == aid: ENV_ACCOUNTS.pop(i); display_names.pop(aid,None); return True
+        if a['id'] == aid:
+            ENV_ACCOUNTS.pop(i); display_names.pop(aid, None); return True
     return False
+
 
 def admin_max_accounts(u):
     if is_owner(u): return None
     a = get_admin(u)
     if a and a.get('max_accounts') is not None: return int(a['max_accounts'])
     return DEFAULT_ADMIN_LIMIT
+
+
 def owner_acc_count(u): return sum(1 for a in get_all_accounts() if a.get('owner_id') == u)
+
+
 def account_limit_reached(u):
     if is_owner(u): return False, ""
     cap = admin_max_accounts(u)
     if cap is None: return False, ""
-    if owner_acc_count(u) >= cap: return True, f"❌ Account limit reached ({owner_acc_count(u)}/{cap})!"
+    if owner_acc_count(u) >= cap:
+        return True, f"❌ Account limit reached ({owner_acc_count(u)}/{cap})!"
     return False, ""
+
+
 def refresh_account_stats(user_id=None):
     for a in get_all_accounts(user_id):
         aid = a['id']
         if aid not in account_stats:
-            account_stats[aid] = {'sent':0,'running':False,'failed_channels':[]}
+            account_stats[aid] = {'sent': 0, 'running': False, 'failed_channels': []}
             stop_flags[aid] = False
 
+
 web_app = Flask(__name__)
+
+
 @web_app.route("/")
 def home():
     all_a = get_all_accounts()
-    run = sum(1 for a in all_a if account_stats.get(a['id'],{}).get('running',False))
-    sent = sum(account_stats.get(a['id'],{}).get('sent',0) for a in all_a)
-    return f"v6.3 | Accounts:{len(all_a)} | Active:{run}/{len(all_a)} | Sent:{sent} | Admins:{len(load_admins())}"
+    run = sum(1 for a in all_a if account_stats.get(a['id'], {}).get('running', False))
+    sent = sum(account_stats.get(a['id'], {}).get('sent', 0) for a in all_a)
+    return f"v7.0 | Accounts:{len(all_a)} | Active:{run}/{len(all_a)} | Sent:{sent} | Admins:{len(load_admins())}"
+
+
 @web_app.route("/health")
 def health(): return "OK", 200
-def run_flask(): web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT",10000)), debug=False, use_reloader=False)
+
+
+def run_flask(): web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), debug=False, use_reloader=False)
+
 
 def load_data():
     global MESSAGE, MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT
     if os.path.exists(data_file):
         try:
             d = json.load(open(data_file))
-            MESSAGE = d.get('message', MESSAGE); MIN_INTERVAL = d.get('min_interval', MIN_INTERVAL)
-            MAX_INTERVAL = d.get('max_interval', MAX_INTERVAL); CYCLE_WAIT = d.get('cycle_wait', CYCLE_WAIT)
+            MESSAGE = d.get('message', MESSAGE)
+            MIN_INTERVAL = d.get('min_interval', MIN_INTERVAL)
+            MAX_INTERVAL = d.get('max_interval', MAX_INTERVAL)
+            CYCLE_WAIT = d.get('cycle_wait', CYCLE_WAIT)
         except: pass
+
+
 def save_data():
     try:
-        json.dump({'message':MESSAGE,'min_interval':MIN_INTERVAL,'max_interval':MAX_INTERVAL,
-                   'cycle_wait':CYCLE_WAIT,'show_start_to_others':SHOW_START_TO_OTHERS}, open(data_file,'w'), indent=2)
+        json.dump({'message': MESSAGE, 'min_interval': MIN_INTERVAL, 'max_interval': MAX_INTERVAL,
+                   'cycle_wait': CYCLE_WAIT, 'show_start_to_others': SHOW_START_TO_OTHERS},
+                  open(data_file, 'w'), indent=2)
     except: pass
 
+
 async def get_client(acc):
-    aid = acc['id']; old = account_clients.get(aid)
+    aid = acc['id']
+    old = account_clients.get(aid)
     if old is not None:
         try:
             if old.is_connected(): return old
@@ -331,12 +586,18 @@ async def get_client(acc):
         except: pass
         del account_clients[aid]
     c = TelegramClient(StringSession(acc['session']), acc['api_id'], acc['api_hash'], receive_updates=False)
-    await c.start(); account_clients[aid] = c; return c
+    await c.start()
+    account_clients[aid] = c
+    return c
+
+
 async def disconnect_client(aid):
     c = account_clients.pop(aid, None)
     if c:
         try: await c.disconnect()
         except: pass
+
+
 async def get_groups(client, retry=3):
     for _ in range(retry):
         try:
@@ -350,29 +611,39 @@ async def get_groups(client, retry=3):
             if gs: return gs
             await asyncio.sleep(3)
         except Exception as e:
-            logger.error(f"groups: {e}"); await asyncio.sleep(3)
+            logger.error(f"groups: {e}")
+            await asyncio.sleep(3)
     return []
+
+
 async def is_account_restricted(client):
     try:
         me = await client.get_me()
         if me is None: return True, "deleted"
         return False, None
-    except (UserRestrictedError,UserDeactivatedError,UserDeactivatedBanError,AuthKeyUnregisteredError) as e:
+    except (UserRestrictedError, UserDeactivatedError, UserDeactivatedBanError, AuthKeyUnregisteredError) as e:
         return True, str(e)
-    except: return False, None
+    except:
+        return False, None
+
+
 async def get_reply_target(client, group):
     try:
         async for m in client.iter_messages(group, limit=10):
-            if m.from_id and m.sender and not getattr(m.sender,'bot',False): return m
+            if m.from_id and m.sender and not getattr(m.sender, 'bot', False): return m
     except: pass
     return None
+
+
 async def notify_user(uid, t):
     try:
         b = Application.builder().token(BOT_TOKEN).build()
         await b.bot.send_message(chat_id=uid, text=t, parse_mode='Markdown')
     except: pass
+
+
 async def join_link(client, link):
-    link = link.strip().replace('http://','https://')
+    link = link.strip().replace('http://', 'https://')
     if not link: raise ValueError("empty")
     if 't.me/+' in link or 'joinchat' in link:
         m = re.search(r'(?:t\.me/\+|joinchat/)([A-Za-z0-9_-]+)', link)
@@ -381,97 +652,201 @@ async def join_link(client, link):
     else:
         m = re.search(r'(?:t\.me/|telegram\.me/|@)([A-Za-z0-9_]+)', link)
         await client(functions.channels.JoinChannelRequest(m.group(1) if m else link.lstrip('@')))
-async def apply_profile(acc, name, photo, bio, channels, bot=None):
-    r = []; aid = acc['id']; client = await get_client(acc)
+
+
+async def apply_profile(acc, name, photo, bio, channels, bot=None, apply_privacy=True):
+    r = []
+    aid = acc['id']
+    client = await get_client(acc)
     if not client.is_user_authorized(): return ["❌ Session is dead!"]
     if name:
-        try: await client(UpdateProfileRequest(first_name=name)); r.append("✅ Name"); persist_rename(aid, name)
-        except Exception as e: r.append(f"❌ Name fail: {str(e)[:40]}")
+        try:
+            await client(UpdateProfileRequest(first_name=name))
+            r.append("✅ Name")
+            persist_rename(aid, name)
+        except Exception as e:
+            r.append(f"❌ Name fail: {str(e)[:40]}")
         await asyncio.sleep(1)
     if bio:
-        try: await client(UpdateProfileRequest(about=bio)); r.append("✅ Bio")
-        except Exception as e: r.append(f"❌ Bio fail: {str(e)[:40]}")
+        try:
+            await client(UpdateProfileRequest(about=bio))
+            r.append("✅ Bio")
+        except Exception as e:
+            r.append(f"❌ Bio fail: {str(e)[:40]}")
         await asyncio.sleep(1)
     if photo:
         p = None
         try:
-            tf = await bot.get_file(photo); p = f"prof_{aid}.jpg"; await tf.download_to_drive(custom_path=p)
-            with open(p,'rb') as fh: up = await client.upload_file(fh)
-            await client(UploadProfilePhotoRequest(file=up)); r.append("✅ Photo")
-        except Exception as e: r.append(f"❌ Photo fail: {str(e)[:40]}")
+            tf = await bot.get_file(photo)
+            p = f"prof_{aid}.jpg"
+            await tf.download_to_drive(custom_path=p)
+            with open(p, 'rb') as fh:
+                up = await client.upload_file(fh)
+            await client(UploadProfilePhotoRequest(file=up))
+            r.append("✅ Photo")
+        except Exception as e:
+            r.append(f"❌ Photo fail: {str(e)[:40]}")
         finally:
             if p and os.path.exists(p):
                 try: os.remove(p)
                 except: pass
         await asyncio.sleep(1)
     for lk in channels:
-        try: await join_link(client, lk); r.append(f"✅ {lk}")
-        except Exception as e: r.append(f"❌ {lk} fail: {str(e)[:30]}")
+        try:
+            await join_link(client, lk)
+            r.append(f"✅ {lk}")
+        except Exception as e:
+            r.append(f"❌ {lk} fail: {str(e)[:30]}")
         await asyncio.sleep(0.5)
+    if apply_privacy:
+        try:
+            priv = await apply_privacy_settings(client)
+            r.extend(priv)
+        except Exception as e:
+            r.append(f"❌ Privacy: {str(e)[:40]}")
+        try:
+            muted = await mute_all_notifications(client)
+            r.append(f"🔕 Muted: {muted} chats")
+        except Exception as e:
+            r.append(f"❌ Mute: {str(e)[:40]}")
     return r
 
+
+async def apply_profile_specific(acc_id, owner_id, bot=None):
+    acc = None
+    for a in get_all_accounts(owner_id):
+        if a['id'] == acc_id:
+            acc = a
+            break
+    if not acc:
+        return ["❌ Account not found"]
+    cfg = get_default_profile()
+    nm = cfg.get('names', [])
+    ph = cfg.get('photos', [])
+    bio = cfg.get('bio', '')
+    ch = cfg.get('channels', [])
+    if not nm and not ph and not bio and not ch:
+        return ["❌ No default profile config set!"]
+    name = nm[0] if nm else ''
+    photo = ph[0] if ph else None
+    try:
+        rr = await apply_profile(acc, name, photo, bio, ch, bot=bot)
+        return rr
+    except Exception as e:
+        return [f"❌ {str(e)[:120]}"]
+
+
+# ============ SEND + MESSAGING ============
+async def send_to_group(client, group, owner, account_id):
+    try:
+        msg = get_random_message_for(owner)
+        rt = await get_reply_target(client, group)
+        if rt:
+            await client.send_message(group, msg, reply_to=rt.id)
+        else:
+            await client.send_message(group, msg)
+        account_stats[account_id]['sent'] += 1
+        return True
+    except FloodWaitError as e:
+        asyncio.create_task(asyncio.sleep(min(e.seconds, 120)))
+        return False
+    except (errors.UserBannedInChannelError, errors.ChatWriteForbiddenError,
+            errors.ChatAdminRequiredError):
+        return False
+    except Exception:
+        return False
+
+
 async def run_account_messaging(acc, owner):
-    aid = acc['id']; stop_flags[aid] = False
-    account_stats.setdefault(aid, {'sent':0,'running':False,'failed_channels':[]})
+    aid = acc['id']
+    stop_flags[aid] = False
+    account_stats.setdefault(aid, {'sent': 0, 'running': False, 'failed_channels': []})
     account_stats[aid]['running'] = True
     try:
-        client = await get_client(acc); me = await client.get_me()
-        if getattr(me,'first_name',None): persist_rename(aid, me.first_name)
+        client = await get_client(acc)
+        me = await client.get_me()
+        if getattr(me, 'first_name', None):
+            persist_rename(aid, me.first_name)
         if not client.is_user_authorized():
-            await notify_user(owner, f"🚨 *SESSION DEAD*\n{get_display_name(acc)}"); stop_account(aid); return
+            await notify_user(owner, f"🚨 *SESSION DEAD*\n{get_display_name(acc)}")
+            stop_account(aid); return
         res, reason = await is_account_restricted(client)
-        if res: await notify_user(owner, f"🚨 *RESTRICTED*\n{get_display_name(acc)}"); stop_account(aid); return
+        if res:
+            await notify_user(owner, f"🚨 *RESTRICTED*\n{get_display_name(acc)}")
+            stop_account(aid); return
         groups = await get_groups(client)
         if not groups:
-            await notify_user(owner, f"⚠️ {get_display_name(acc)} - no groups"); account_stats[aid]['running'] = False; return
-        cycle = 0; failed = set()
+            await notify_user(owner, f"⚠️ {get_display_name(acc)} - no groups")
+            account_stats[aid]['running'] = False
+            return
+
+        cycle = 0
+        failed = set()
         while not stop_flags.get(aid, False):
             if not is_owner(owner) and not is_valid_admin(owner):
                 stop_account(aid); return
+
             mn, mx, cyc = speed_for(owner)
+            is_super_fast = (mn <= 0.2)
+
             random.shuffle(groups)
-            for g in groups:
-                if stop_flags.get(aid, False): break
-                if g.id in failed: continue
-                try:
-                    msg = get_random_message_for(owner)
-                    rt = await get_reply_target(client, g)
-                    if rt: await client.send_message(g, msg, reply_to=rt.id)
-                    else: await client.send_message(g, msg)
-                    account_stats[aid]['sent'] += 1
-                except FloodWaitError as e:
-                    for i in range(min(e.seconds, 60)):
-                        if stop_flags.get(aid): break
+            active_groups = [g for g in groups if g.id not in failed]
+
+            if is_super_fast:
+                CONCURRENCY = 10
+                sem = asyncio.Semaphore(CONCURRENCY)
+
+                async def worker(g):
+                    if stop_flags.get(aid): return
+                    async with sem:
+                        if stop_flags.get(aid): return
+                        ok = await send_to_group(client, g, owner, aid)
+                        if not ok:
+                            await asyncio.sleep(random.uniform(float(mn), float(mx)))
+
+                tasks = [asyncio.create_task(worker(g)) for g in active_groups]
+                await asyncio.gather(*tasks, return_exceptions=True)
+            else:
+                for g in active_groups:
+                    if stop_flags.get(aid): break
+                    ok = await send_to_group(client, g, owner, aid)
+                    try:
+                        await asyncio.sleep(random.uniform(float(mn), float(mx)))
+                    except Exception:
                         await asyncio.sleep(1)
-                    if e.seconds > 60: await asyncio.sleep(e.seconds - 60)
-                except (errors.UserBannedInChannelError, errors.ChatWriteForbiddenError, errors.ChatAdminRequiredError):
-                    failed.add(g.id)
-                except errors.RPCError as e:
-                    if any(x in str(e).lower() for x in ['ban','restrict','forbidden','write','permission']): failed.add(g.id)
-                except Exception as e:
-                    if any(x in str(e).lower() for x in ['ban','restrict','forbidden','admin',"can't write"]): failed.add(g.id)
-                await asyncio.sleep(random.randint(mn, mx))
+
             res, reason = await is_account_restricted(client)
-            if res: await notify_user(owner, f"🚨 *RESTRICTED*\n{get_display_name(acc)}"); stop_account(aid); return
+            if res:
+                await notify_user(owner, f"🚨 *RESTRICTED*\n{get_display_name(acc)}")
+                stop_account(aid); return
             if stop_flags.get(aid): break
-            failed = set(); cycle += 1
-            for i in range(cyc):
+            failed = set()
+            cycle += 1
+            for i in range(int(cyc)):
                 if stop_flags.get(aid): break
                 await asyncio.sleep(1)
             if cycle % 15 == 0:
                 try:
-                    await disconnect_client(aid); await asyncio.sleep(3)
+                    await disconnect_client(aid)
+                    await asyncio.sleep(3)
                     if not stop_flags.get(aid):
-                        client = await get_client(acc); groups = await get_groups(client)
+                        client = await get_client(acc)
+                        groups = await get_groups(client)
                         me = await client.get_me()
-                        if getattr(me,'first_name',None): persist_rename(aid, me.first_name)
-                except Exception as e: logger.error(f"reconnect:{e}")
-    except asyncio.CancelledError: pass
+                        if getattr(me, 'first_name', None):
+                            persist_rename(aid, me.first_name)
+                except Exception as e:
+                    logger.error(f"reconnect:{e}")
+    except asyncio.CancelledError:
+        pass
     except Exception as e:
         logger.error(f"fatal:{e}")
         await notify_user(owner, f"❌ Fatal: `{str(e)[:150]}`")
     finally:
-        await disconnect_client(aid); account_stats[aid]['running'] = False; stop_flags[aid] = True
+        await disconnect_client(aid)
+        account_stats[aid]['running'] = False
+        stop_flags[aid] = True
+
 
 def stop_account(aid):
     stop_flags[aid] = True
@@ -480,10 +855,15 @@ def stop_account(aid):
         try: del running_tasks[aid]
         except: pass
     if aid in account_stats: account_stats[aid]['running'] = False
+
+
 def stop_accounts_of(u):
     for a in get_all_accounts(u): stop_account(a['id'])
+
+
 def stop_all_accounts():
     for a in get_all_accounts(): stop_account(a['id'])
+
 
 async def admin_expiry_checker():
     while True:
@@ -494,31 +874,103 @@ async def admin_expiry_checker():
                 if is_valid_admin(a['user_id']): valid.add(a['user_id'])
             for acc in get_all_accounts():
                 oid = acc.get('owner_id', OWNER_ID)
-                if oid not in valid and account_stats.get(acc['id'],{}).get('running',False):
-                    stop_account(acc['id']); await disconnect_client(acc['id'])
+                if oid not in valid and account_stats.get(acc['id'], {}).get('running', False):
+                    stop_account(acc['id'])
+                    await disconnect_client(acc['id'])
         except Exception as e:
             logger.error(f"expiry:{e}")
+
+
+async def backup_switch_loop():
+    while True:
+        try:
+            await asyncio.sleep(60)
+            now_ist = ist_now()
+            today = now_ist.strftime('%Y-%m-%d')
+            all_backups = load_backups()
+            for uid_str, cfg in list(all_backups.items()):
+                try:
+                    uid = int(uid_str)
+                except Exception:
+                    continue
+                if not cfg.get('enabled'):
+                    continue
+
+                del_at = cfg.get('delete_after')
+                if del_at:
+                    try:
+                        if now_ist >= datetime.fromisoformat(del_at):
+                            logger.info(f"🗑️ Backup auto-delete for {uid}")
+                            cfg['enabled'] = False
+                            cfg['backup_ids'] = []
+                            cfg['delete_after'] = None
+                            set_user_backup(uid, cfg)
+                            await notify_user(uid, "🗑️ *Backup config auto-deleted* (scheduled)")
+                            continue
+                    except Exception:
+                        pass
+
+                in_window = in_backup_window(cfg)
+                last_date = cfg.get('last_run_date')
+
+                if in_window and last_date != f"in_{today}":
+                    logger.info(f"🌙 Backup window START {uid}")
+                    for a in get_all_accounts(uid):
+                        if a['id'] not in cfg['backup_ids']:
+                            stop_account(a['id'])
+                    for bid in cfg['backup_ids']:
+                        acc = None
+                        for a in get_all_accounts(uid):
+                            if a['id'] == bid:
+                                acc = a
+                                break
+                        if acc and not account_stats.get(bid, {}).get('running', False):
+                            stop_flags[bid] = False
+                            running_tasks[bid] = asyncio.create_task(run_account_messaging(acc, uid))
+                    cfg['last_run_date'] = f"in_{today}"
+                    set_user_backup(uid, cfg)
+                    await notify_user(uid, f"🌙 *Backup mode ON* ({cfg['start_time']}–{cfg['end_time']} IST)")
+
+                elif (not in_window) and last_date == f"in_{today}":
+                    logger.info(f"☀️ Backup window END {uid}")
+                    for bid in cfg['backup_ids']:
+                        stop_account(bid)
+                    for a in get_all_accounts(uid):
+                        if a['id'] not in cfg['backup_ids'] and not account_stats.get(a['id'], {}).get('running', False):
+                            stop_flags[a['id']] = False
+                            running_tasks[a['id']] = asyncio.create_task(run_account_messaging(a, uid))
+                    cfg['last_run_date'] = f"out_{today}"
+                    set_user_backup(uid, cfg)
+                    await notify_user(uid, f"☀️ *Backup mode OFF* — main accounts active")
+        except Exception as e:
+            logger.error(f"backup loop err: {e}")
+
 
 async def test_session_only(ss):
     c = None
     try:
-        if not API_ID_1 or not API_HASH_1: return False, "API missing", None, None
+        if not API_ID_1 or not API_HASH_1:
+            return False, "API missing", None, None
         c = TelegramClient(StringSession(ss), API_ID_1, API_HASH_1, receive_updates=False)
-        await c.start(); me = await c.get_me()
+        await c.start()
+        me = await c.get_me()
         return True, me.first_name, me.id, c.session.save()
-    except Exception as e: return False, str(e), None, None
+    except Exception as e:
+        return False, str(e), None, None
     finally:
         if c:
             try: await c.disconnect()
             except: pass
 
-# ---- Keyboards ----
+
+# ============ KEYBOARDS ============
 def main_menu_keyboard(u):
     if is_owner(u):
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("▶️ Start All", callback_data='start_all'),
              InlineKeyboardButton("⏹️ Stop All", callback_data='stop_all')],
-            [InlineKeyboardButton("⚙️ Settings", callback_data='settings')],
+            [InlineKeyboardButton("⚙️ Settings", callback_data='settings'),
+             InlineKeyboardButton("🌙 Backup", callback_data='backup_menu')],
             [InlineKeyboardButton("🔑 Session Login", callback_data='add_account')],
             [InlineKeyboardButton("📱 Phone Login", callback_data='phone_login')],
             [InlineKeyboardButton("🗑️ Delete Account", callback_data='delete_account')],
@@ -527,63 +979,82 @@ def main_menu_keyboard(u):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("▶️ Start All", callback_data='start_all'),
          InlineKeyboardButton("⏹️ Stop All", callback_data='stop_all')],
-        [InlineKeyboardButton("⚙️ Settings", callback_data='settings')],
+        [InlineKeyboardButton("⚙️ Settings", callback_data='settings'),
+         InlineKeyboardButton("🌙 Backup", callback_data='backup_menu')],
         [InlineKeyboardButton("🔑 Session Login", callback_data='add_account')],
         [InlineKeyboardButton("📱 Phone Login", callback_data='phone_login')],
         [InlineKeyboardButton("🗑️ Delete Account", callback_data='delete_account')],
         [InlineKeyboardButton("🎨 Profile Setup", callback_data='profile_setup')]])
 
+
 def main_menu_text(u):
     accs = get_all_accounts(u)
-    run = sum(1 for a in accs if account_stats.get(a['id'],{}).get('running',False))
-    sent = sum(account_stats.get(a['id'],{}).get('sent',0) for a in accs)
+    run = sum(1 for a in accs if account_stats.get(a['id'], {}).get('running', False))
+    sent = sum(account_stats.get(a['id'], {}).get('sent', 0) for a in accs)
     mn, mx, cyc = speed_for(u)
+    fast = "🚀 SUPER FAST" if mn <= 0.2 else "🐢 Normal"
     role = "👑 Owner" if is_owner(u) else "👤 Admin"
     extra = ""
     if not is_owner(u):
-        a = get_admin(u); exp = f"\n⏳ Time: {remaining_time_str(a.get('expires_at') if a else None)}"
+        a = get_admin(u)
+        exp = f"\n⏳ Time: {remaining_time_str(a.get('expires_at') if a else None)}"
         cap = admin_max_accounts(u); cur = owner_acc_count(u)
         lim = f"\n🔢 Accounts: {cur}" if cap is None else f"\n🔢 Accounts: {cur}/{cap}"
         extra = exp + lim
-    return (f"*Bot v6.3*\n{role}{extra}\n\n"
+    bk = get_user_backup(u)
+    bk_line = f"\n🌙 Backup: {'🟢 ON' if bk.get('enabled') else '🔴 OFF'}" if bk.get('backup_ids') else ""
+    return (f"*Bot v7.0*\n{role}{extra}\n\n"
             f"📊 Accounts: {len(accs)} (Running: {run})\n"
-            f"⚡ Speed: {mn}-{mx}s | Cycle: {cyc}s\n📨 Sent: {sent}")
+            f"⚡ Speed: {fast} ({mn}-{mx}s | Cycle: {cyc}s){bk_line}\n📨 Sent: {sent}")
+
 
 async def start_command(u, c):
     uid = u.effective_user.id
     eu = u.effective_user
     record_user_info(uid, eu.first_name, eu.last_name, eu.username)
     if is_owner(uid) or is_valid_admin(uid):
-        refresh_account_stats(uid); preload_display_names(get_all_accounts(uid))
+        refresh_account_stats(uid)
+        preload_display_names(get_all_accounts(uid))
         await u.message.reply_text(main_menu_text(uid), parse_mode='Markdown', reply_markup=main_menu_keyboard(uid))
         return
-    if SHOW_START_TO_OTHERS: await u.message.reply_text("🤖 Private bot. Please contact the owner.")
+    if SHOW_START_TO_OTHERS:
+        await u.message.reply_text("🤖 Private bot. Please contact the owner.")
+
 
 async def apply_admin_time(target, op, nd, q=None, text_ui=None):
     now = datetime.now()
-    admins = load_admins(); a = get_admin(target)
+    admins = load_admins()
+    a = get_admin(target)
     if a is None:
-        a = {'user_id':target,'expires_at':None if nd is None else nd.isoformat(),
-             'added_at':now.isoformat(),'updated_at':now.isoformat(),'max_accounts':DEFAULT_ADMIN_LIMIT}
-        admins.append(a); save_admins(admins)
+        a = {'user_id': target, 'expires_at': None if nd is None else nd.isoformat(),
+             'added_at': now.isoformat(), 'updated_at': now.isoformat(), 'max_accounts': DEFAULT_ADMIN_LIMIT}
+        admins.append(a)
+        save_admins(admins)
         chg = remaining_time_str(a['expires_at'])
         resp = f"✅ Admin added: {admin_label(target)}\n⏳ Time: {chg}"
     else:
         if nd is None:
-            if op == '-': a['expires_at'] = now.isoformat(); chg = "expired now"
-            else: a['expires_at'] = None; chg = "♾️ Permanent"
+            if op == '-':
+                a['expires_at'] = now.isoformat()
+                chg = "expired now"
+            else:
+                a['expires_at'] = None
+                chg = "♾️ Permanent"
         else:
             cur = None
             try: cur = datetime.fromisoformat(a['expires_at']) if a.get('expires_at') else None
             except: cur = None
             rem = (cur - now) if (cur and cur > now) else timedelta(0)
             dl = nd - now
-            if op == '=': ne = nd
+            if op == '=':
+                ne = nd
             elif op == '-':
                 ne = now + (rem - dl)
                 if ne < now: ne = now
-            else: ne = now + dl + rem
-            a['expires_at'] = ne.isoformat(); chg = remaining_time_str(a['expires_at'])
+            else:
+                ne = now + dl + rem
+            a['expires_at'] = ne.isoformat()
+            chg = remaining_time_str(a['expires_at'])
         a['updated_at'] = now.isoformat()
         replace_admin(target, a)
         resp = f"✅ Admin updated: {admin_label(target)}\n⏳ Time: {chg}"
@@ -594,6 +1065,7 @@ async def apply_admin_time(target, op, nd, q=None, text_ui=None):
         try: await q.edit_message_text(resp, parse_mode='Markdown', reply_markup=BACK_KB)
         except: pass
     return resp
+
 
 async def do_broadcast(reply_target, bot, uid, caption="", media_file=None, media_type="text"):
     if not is_owner(uid): return
@@ -610,148 +1082,444 @@ async def do_broadcast(reply_target, bot, uid, caption="", media_file=None, medi
             elif media_type == 'animation': await bot.send_animation(chat_id=t, animation=media_file, caption=caption)
             else: await bot.send_message(chat_id=t, text=caption)
             ok += 1
-        except Exception as e: logger.error(f"bc:{e}")
+        except Exception as e:
+            logger.error(f"bc:{e}")
     try: await reply_target.reply_text(f"📢 Broadcast sent to {ok}/{len(targets)} admins", reply_markup=BACK_KB)
     except: pass
 
+
+# ============ BUTTON CLICK HANDLER ============
 async def button_click(u, c):
     global MIN_INTERVAL, MAX_INTERVAL, CYCLE_WAIT, SHOW_START_TO_OTHERS
-    q = u.callback_query; await q.answer(); uid = q.from_user.id
+    q = u.callback_query
+    await q.answer()
+    uid = q.from_user.id
     frm = q.from_user
     record_user_info(uid, frm.first_name, frm.last_name, frm.username)
     if not (is_owner(uid) or is_valid_admin(uid)):
-        if SHOW_START_TO_OTHERS: await q.edit_message_text("⛔ Access denied / expired.")
-        else: await q.edit_message_text(" ")
+        if SHOW_START_TO_OTHERS:
+            await q.edit_message_text("⛔ Access denied / expired.")
+        else:
+            await q.edit_message_text(" ")
         return
 
     d = q.data
+
     if d == 'start_all':
         p = []
         for a in get_all_accounts(uid):
-            if account_stats.get(a['id'],{}).get('running',False): p.append(f"✅ Already running: {get_display_name(a)}")
+            if account_stats.get(a['id'], {}).get('running', False):
+                p.append(f"✅ Already running: {get_display_name(a)}")
             else:
                 stop_flags[a['id']] = False
                 running_tasks[a['id']] = asyncio.create_task(run_account_messaging(a, uid))
                 p.append(f"▶️ Started: {get_display_name(a)}")
         await q.edit_message_text("\n".join(p) if p else "❌ No accounts", reply_markup=BACK_KB)
+
     elif d == 'stop_all':
         p = []
         for a in get_all_accounts(uid):
-            if account_stats.get(a['id'],{}).get('running',False): stop_account(a['id']); p.append(f"⏹️ Stopping: {get_display_name(a)}")
-            else: p.append(f"⏸️ Stopped: {get_display_name(a)}")
+            if account_stats.get(a['id'], {}).get('running', False):
+                stop_account(a['id'])
+                p.append(f"⏹️ Stopping: {get_display_name(a)}")
+            else:
+                p.append(f"⏸️ Stopped: {get_display_name(a)}")
         await q.edit_message_text("\n".join(p) if p else "✅ Nothing running", reply_markup=BACK_KB)
+
     elif d == 'status':
-        accs = get_all_accounts(uid); txt = "📊 *Status*\n\n"
+        accs = get_all_accounts(uid)
+        txt = "📊 *Status*\n\n"
         for i, a in enumerate(accs, 1):
-            st = '🟢 RUNNING' if account_stats.get(a['id'],{}).get('running',False) else '🔴 STOPPED'
-            txt += f"#{i} · {get_display_name(a)}\n ↳ {st} | Sent: {account_stats.get(a['id'],{}).get('sent',0)}\n"
+            st = '🟢 RUNNING' if account_stats.get(a['id'], {}).get('running', False) else '🔴 STOPPED'
+            txt += f"#{i} · {get_display_name(a)}\n ↳ {st} | Sent: {account_stats.get(a['id'], {}).get('sent', 0)}\n"
         if not accs: txt += "_None_\n"
-        txt += f"\n📨 Total: {sum(account_stats.get(a['id'],{}).get('sent',0) for a in accs)}"
+        txt += f"\n📨 Total: {sum(account_stats.get(a['id'], {}).get('sent', 0) for a in accs)}"
         await q.edit_message_text(txt, parse_mode='Markdown', reply_markup=BACK_KB)
+
     elif d == 'settings':
         mn, mx, cyc = speed_for(uid)
-        kb = [[InlineKeyboardButton("📊 Status", callback_data='status')],
-              [InlineKeyboardButton("📝 Messages", callback_data='message_list'),
-               InlineKeyboardButton("⏱️ Speed", callback_data='edit_speed')],
-              [InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
-        await q.edit_message_text(f"⚙️ *Settings*\n⚡ Speed: {mn}-{mx}s | Cycle: {cyc}s", parse_mode='Markdown',
-                                  reply_markup=InlineKeyboardMarkup(kb))
+        fast_label = "🚀 SUPER FAST: ON" if mn <= 0.2 else "🐢 Normal Speed"
+        kb = [
+            [InlineKeyboardButton("📊 Status", callback_data='status')],
+            [InlineKeyboardButton("📝 Messages", callback_data='message_list'),
+             InlineKeyboardButton("⏱️ Speed", callback_data='edit_speed')],
+            [InlineKeyboardButton(fast_label, callback_data='toggle_fast')],
+            [InlineKeyboardButton("🔙 Back", callback_data='back_main')]
+        ]
+        await q.edit_message_text(
+            f"⚙️ *Settings*\n⚡ Speed: {mn}-{mx}s | Cycle: {cyc}s",
+            parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+
+    elif d == 'toggle_fast':
+        mn, mx, cyc = speed_for(uid)
+        if mn <= 0.2:
+            set_speed(uid, min_i=MIN_INTERVAL, max_i=MAX_INTERVAL, cycle=CYCLE_WAIT)
+            new_label = "OFF"
+        else:
+            set_speed(uid, min_i=0.05, max_i=0.15, cycle=5)
+            new_label = "ON"
+        await q.edit_message_text(
+            f"⚡ *Super Fast Mode: {new_label}*\n\n"
+            f"{'🚀 1 second-এ ~10-20 message যাবে (parallel workers)' if new_label == 'ON' else '🐢 Normal speed'}\n\n"
+            f"⚠️ Fast mode-এ Telegram দ্রুত ban করতে পারে!",
+            parse_mode='Markdown', reply_markup=BACK_KB)
+
     elif d == 'message_list':
-        m = load_messages_for(uid); txt = f"📝 *Your Messages* ({len(m)}):\n" + "".join(f"`{x[:40]}`\n\n" for x in m[:10])
-        kb = [[InlineKeyboardButton("➕ Add", callback_data='add_message'), InlineKeyboardButton("🗑️ Delete", callback_data='delete_message_menu')],
+        m = load_messages_for(uid)
+        txt = f"📝 *Your Messages* ({len(m)}):\n" + "".join(f"`{x[:40]}`\n\n" for x in m[:10])
+        kb = [[InlineKeyboardButton("➕ Add", callback_data='add_message'),
+               InlineKeyboardButton("🗑️ Delete", callback_data='delete_message_menu')],
               [InlineKeyboardButton("🔄 Reset", callback_data='reset_messages')],
               [InlineKeyboardButton("🔙 Back", callback_data='settings')]]
         await q.edit_message_text(txt, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+
     elif d == 'edit_speed':
         mn, mx, cyc = speed_for(uid)
-        kb = [[InlineKeyboardButton(f"⏱️ Min {mn}s", callback_data='set_min'), InlineKeyboardButton(f"⏱️ Max {mx}s", callback_data='set_max')],
-              [InlineKeyboardButton(f"🔄 Cycle {cyc}s", callback_data='set_cycle')],
-              [InlineKeyboardButton("🔙 Back", callback_data='settings')]]
-        await q.edit_message_text("⏱️ *Speed Settings*\n(For your own accounts)", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
-    elif d == 'add_message': c.user_data['awaiting'] = 'add_message'; await q.edit_message_text("✏️ Send the new message text:", reply_markup=BACK_KB)
+        kb = [
+            [InlineKeyboardButton(f"⏱️ Min {mn}s", callback_data='set_min'),
+             InlineKeyboardButton(f"⏱️ Max {mx}s", callback_data='set_max')],
+            [InlineKeyboardButton(f"🔄 Cycle {cyc}s", callback_data='set_cycle')],
+            [InlineKeyboardButton("🚀 Set Super Fast (0.05-0.15)", callback_data='set_super_fast')],
+            [InlineKeyboardButton("🔙 Back", callback_data='settings')]
+        ]
+        await q.edit_message_text(
+            "⏱️ *Speed Settings*\n\nFloat value সাপোর্ট করে (যেমন 0.05, 0.1)",
+            parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+
+    elif d == 'set_super_fast':
+        set_speed(uid, min_i=0.05, max_i=0.15, cycle=5)
+        await q.edit_message_text(
+            "🚀 *SUPER FAST Enabled*\n\n"
+            "Speed: 0.05-0.15s\nCycle: 5s\nConcurrency: 10 parallel workers\n\n"
+            "মানে: প্রতি second-এ ~10 message যাবে!",
+            parse_mode='Markdown', reply_markup=BACK_KB)
+
+    elif d == 'add_message':
+        c.user_data['awaiting'] = 'add_message'
+        await q.edit_message_text("✏️ Send the new message text:", reply_markup=BACK_KB)
+
     elif d == 'delete_message_menu':
         m = load_messages_for(uid)
-        if not m: await q.edit_message_text("❌ No messages yet", reply_markup=BACK_KB); return
-        kb = [[InlineKeyboardButton(f"🗑️ {i+1}. {x[:20]}", callback_data=f'del_msg_{i}')] for i,x in enumerate(m)]
+        if not m:
+            await q.edit_message_text("❌ No messages yet", reply_markup=BACK_KB)
+            return
+        kb = [[InlineKeyboardButton(f"🗑️ {i+1}. {x[:20]}", callback_data=f'del_msg_{i}')] for i, x in enumerate(m)]
         kb.append([InlineKeyboardButton("🔙 Back", callback_data='message_list')])
         await q.edit_message_text("Which one to delete?", reply_markup=InlineKeyboardMarkup(kb))
+
     elif d.startswith('del_msg_'):
-        m = load_messages_for(uid); i = int(d.replace('del_msg_',''))
-        if 0 <= i < len(m): m.pop(i); save_messages_for(uid, m)
+        m = load_messages_for(uid)
+        i = int(d.replace('del_msg_', ''))
+        if 0 <= i < len(m):
+            m.pop(i); save_messages_for(uid, m)
         await q.edit_message_text("🗑️ Deleted", reply_markup=BACK_KB)
-    elif d == 'reset_messages': save_messages_for(uid, [MESSAGE]); await q.edit_message_text("🔄 Reset done", reply_markup=BACK_KB)
+
+    elif d == 'reset_messages':
+        save_messages_for(uid, [MESSAGE])
+        await q.edit_message_text("🔄 Reset done", reply_markup=BACK_KB)
+
     elif d == 'set_min':
-        mn, mx, cyc = speed_for(uid); c.user_data['awaiting'] = 'set_min'
-        await q.edit_message_text(f"⏱️ Enter Min seconds (1 - {mx-1}):", reply_markup=BACK_KB)
+        mn, mx, cyc = speed_for(uid)
+        c.user_data['awaiting'] = 'set_min'
+        await q.edit_message_text(f"⏱️ Enter Min seconds (0.01 - {mx}):", reply_markup=BACK_KB)
+
     elif d == 'set_max':
-        mn, mx, cyc = speed_for(uid); c.user_data['awaiting'] = 'set_max'
+        mn, mx, cyc = speed_for(uid)
+        c.user_data['awaiting'] = 'set_max'
         await q.edit_message_text(f"⏱️ Enter Max seconds (> {mn}):", reply_markup=BACK_KB)
-    elif d == 'set_cycle': c.user_data['awaiting'] = 'set_cycle'; await q.edit_message_text("🔄 Enter cycle seconds (5+):", reply_markup=BACK_KB)
+
+    elif d == 'set_cycle':
+        c.user_data['awaiting'] = 'set_cycle'
+        await q.edit_message_text("🔄 Enter cycle seconds (5+):", reply_markup=BACK_KB)
+
     elif d == 'profile_setup':
-        accs = get_all_accounts(uid); cfg = get_default_profile(); nm = cfg.get('names',[]); ph = cfg.get('photos',[])
-        if not accs: await q.edit_message_text("❌ No accounts", reply_markup=BACK_KB); return
-        kb = [[InlineKeyboardButton(f"⚙️ Profile Config (Names:{len(nm)}|Logos:{len(ph)})", callback_data='profdefault')],
-              [InlineKeyboardButton("⚡ Apply to ALL accounts", callback_data='profapply_all')],
-              [InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
-        await q.edit_message_text(f"🎨 *Profile Setup*\nAccounts: {len(accs)}", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+        accs = get_all_accounts(uid)
+        cfg = get_default_profile()
+        nm = cfg.get('names', [])
+        ph = cfg.get('photos', [])
+        if not accs:
+            await q.edit_message_text("❌ No accounts", reply_markup=BACK_KB)
+            return
+        kb = [
+            [InlineKeyboardButton(f"⚙️ Profile Config (Names:{len(nm)}|Logos:{len(ph)})", callback_data='profdefault')],
+            [InlineKeyboardButton("⚡ Apply to ALL accounts", callback_data='profapply_all')],
+            [InlineKeyboardButton("🎯 Apply to ONE account", callback_data='profapply_one_menu')],
+            [InlineKeyboardButton("🔙 Back", callback_data='back_main')]
+        ]
+        await q.edit_message_text(
+            f"🎨 *Profile Setup*\nAccounts: {len(accs)}\n\n"
+            f"⚡ = সব account-এ apply\n🎯 = একটা specific account-এ apply",
+            parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+
+    elif d == 'profapply_one_menu':
+        accs = get_all_accounts(uid)
+        if not accs:
+            await q.edit_message_text("❌ No accounts", reply_markup=BACK_KB)
+            return
+        kb = []
+        for i, a in enumerate(accs, 1):
+            ti = {'env': '💚', 'dynamic': '💙', 'phone_auth': '📱'}.get(a.get('type', ''), '❓')
+            kb.append([InlineKeyboardButton(
+                f"{ti} #{i} · {get_display_name(a)[:22]}",
+                callback_data=f'profapply_one_{a["id"]}'
+            )])
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data='profile_setup')])
+        await q.edit_message_text("🎯 *Select account:*", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+
+    elif d.startswith('profapply_one_'):
+        acc_id = d.replace('profapply_one_', '')
+        await q.edit_message_text("⏳ Applying to 1 account...", reply_markup=BACK_KB)
+        try:
+            rr = await apply_profile_specific(acc_id, uid, bot=c.bot)
+            txt = "✅ *Done!*\n\n" + "\n".join(rr)
+            await q.edit_message_text(txt, parse_mode='Markdown', reply_markup=BACK_KB)
+        except Exception as e:
+            await q.edit_message_text(f"❌ {str(e)[:150]}", reply_markup=BACK_KB)
+
     elif d == 'profdefault':
-        cfg = get_default_profile(); nm = cfg.get('names',[]); ph = cfg.get('photos',[]); ch = cfg.get('channels',[])
-        txt = f"⚙️ *Profile Config*\n📝 Names ({len(nm)})\n🖼️ Logos: {len(ph)} | 📄 Bio: `{cfg.get('bio','-')}`\n📢 Channels ({len(ch)})\n" + "".join(f" {x}\n" for x in ch[:10])
-        kb = [[InlineKeyboardButton("➕ Add Name", callback_data='def_add_name'), InlineKeyboardButton("➖ Del Name", callback_data='def_del_name')],
-              [InlineKeyboardButton("🖼️ Add Logo", callback_data='def_add_photo'), InlineKeyboardButton("🗑️ Del Logo", callback_data='def_del_photo')],
-              [InlineKeyboardButton("📄 Set Bio", callback_data='def_bio')],
-              [InlineKeyboardButton("📢 Channels", callback_data='def_chan')],
-              [InlineKeyboardButton("🔄 Reset", callback_data='def_reset')],
-              [InlineKeyboardButton("🔙 Back", callback_data='profile_setup')]]
+        cfg = get_default_profile()
+        nm = cfg.get('names', [])
+        ph = cfg.get('photos', [])
+        ch = cfg.get('channels', [])
+        txt = (f"⚙️ *Profile Config*\n"
+               f"📝 Names ({len(nm)})\n"
+               f"🖼️ Logos: {len(ph)} | 📄 Bio: `{cfg.get('bio','-')}`\n"
+               f"📢 Channels ({len(ch)})\n" + "".join(f" {x}\n" for x in ch[:10]))
+        kb = [
+            [InlineKeyboardButton("➕ Add Name", callback_data='def_add_name'),
+             InlineKeyboardButton("➖ Del Name", callback_data='def_del_name')],
+            [InlineKeyboardButton("🖼️ Add Logo", callback_data='def_add_photo'),
+             InlineKeyboardButton("🗑️ Del Logo", callback_data='def_del_photo')],
+            [InlineKeyboardButton("📄 Set Bio", callback_data='def_bio')],
+            [InlineKeyboardButton("📢 Channels", callback_data='def_chan')],
+            [InlineKeyboardButton("🔄 Reset", callback_data='def_reset')],
+            [InlineKeyboardButton("🔙 Back", callback_data='profile_setup')]
+        ]
         await q.edit_message_text(txt, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
-    elif d == 'def_add_name': c.user_data['awaiting'] = 'def_add_name'; await q.edit_message_text("📝 Send names, one per line:", reply_markup=BACK_KB)
+
+    elif d == 'def_add_name':
+        c.user_data['awaiting'] = 'def_add_name'
+        await q.edit_message_text("📝 Send names, one per line:", reply_markup=BACK_KB)
+
     elif d == 'def_del_name':
-        nm = get_default_profile().get('names',[])
-        if not nm: await q.edit_message_text("❌ No names", reply_markup=BACK_KB); return
-        kb = [[InlineKeyboardButton(f"➖ {x[:25]}", callback_data=f'def_delname_{i}')] for i,x in enumerate(nm)]
+        nm = get_default_profile().get('names', [])
+        if not nm:
+            await q.edit_message_text("❌ No names", reply_markup=BACK_KB)
+            return
+        kb = [[InlineKeyboardButton(f"➖ {x[:25]}", callback_data=f'def_delname_{i}')] for i, x in enumerate(nm)]
         kb.append([InlineKeyboardButton("🔙 Back", callback_data='profdefault')])
         await q.edit_message_text("Which?", reply_markup=InlineKeyboardMarkup(kb))
+
     elif d.startswith('def_delname_'):
-        cfg = get_default_profile(); nm = cfg.get('names',[]); i = int(d.replace('def_delname_',''))
-        if 0 <= i < len(nm): nm.pop(i); cfg['names'] = nm; save_default_profile(cfg)
+        cfg = get_default_profile()
+        nm = cfg.get('names', [])
+        i = int(d.replace('def_delname_', ''))
+        if 0 <= i < len(nm):
+            nm.pop(i); cfg['names'] = nm; save_default_profile(cfg)
         await q.edit_message_text("🗑️ Deleted", reply_markup=BACK_KB)
-    elif d == 'def_add_photo': c.user_data['awaiting'] = 'def_add_photo'; await q.edit_message_text("🖼️ Send a photo:", reply_markup=BACK_KB)
+
+    elif d == 'def_add_photo':
+        c.user_data['awaiting'] = 'def_add_photo'
+        await q.edit_message_text("🖼️ Send a photo:", reply_markup=BACK_KB)
+
     elif d == 'def_del_photo':
-        ph = get_default_profile().get('photos',[])
-        if not ph: await q.edit_message_text("❌ No logos", reply_markup=BACK_KB); return
+        ph = get_default_profile().get('photos', [])
+        if not ph:
+            await q.edit_message_text("❌ No logos", reply_markup=BACK_KB)
+            return
         kb = [[InlineKeyboardButton(f"🗑️ Logo #{i+1}", callback_data=f'def_delphoto_{i}')] for i in range(len(ph))]
         kb.append([InlineKeyboardButton("🔙 Back", callback_data='profdefault')])
         await q.edit_message_text("Which?", reply_markup=InlineKeyboardMarkup(kb))
+
     elif d.startswith('def_delphoto_'):
-        cfg = get_default_profile(); ph = cfg.get('photos',[]); i = int(d.replace('def_delphoto_',''))
-        if 0 <= i < len(ph): ph.pop(i); cfg['photos'] = ph; save_default_profile(cfg)
+        cfg = get_default_profile()
+        ph = cfg.get('photos', [])
+        i = int(d.replace('def_delphoto_', ''))
+        if 0 <= i < len(ph):
+            ph.pop(i); cfg['photos'] = ph; save_default_profile(cfg)
         await q.edit_message_text("🗑️ Deleted", reply_markup=BACK_KB)
-    elif d == 'def_bio': c.user_data['awaiting'] = 'def_bio'; await q.edit_message_text("📄 Send bio text:", reply_markup=BACK_KB)
-    elif d == 'def_chan': c.user_data['awaiting'] = 'def_chan'; await q.edit_message_text("📢 Send channel links (line wise):", reply_markup=BACK_KB)
-    elif d == 'def_reset': save_default_profile({}); await q.edit_message_text("🔄 Reset done", reply_markup=BACK_KB)
+
+    elif d == 'def_bio':
+        c.user_data['awaiting'] = 'def_bio'
+        await q.edit_message_text("📄 Send bio text:", reply_markup=BACK_KB)
+
+    elif d == 'def_chan':
+        c.user_data['awaiting'] = 'def_chan'
+        await q.edit_message_text("📢 Send channel links (line wise):", reply_markup=BACK_KB)
+
+    elif d == 'def_reset':
+        save_default_profile({})
+        await q.edit_message_text("🔄 Reset done", reply_markup=BACK_KB)
+
     elif d == 'profapply_all':
-        accs = get_all_accounts(uid); cfg = get_default_profile()
-        nm = cfg.get('names',[]); ph = cfg.get('photos',[]); bio = cfg.get('bio',''); ch = cfg.get('channels',[])
-        if not accs or (not nm and not ph and not bio and not ch): await q.edit_message_text("❌ Add config first!", reply_markup=BACK_KB); return
-        total = len(accs); prog = {'done':0,'lines':{}}
+        accs = get_all_accounts(uid)
+        cfg = get_default_profile()
+        nm = cfg.get('names', [])
+        ph = cfg.get('photos', [])
+        bio = cfg.get('bio', '')
+        ch = cfg.get('channels', [])
+        if not accs or (not nm and not ph and not bio and not ch):
+            await q.edit_message_text("❌ Add config first!", reply_markup=BACK_KB)
+            return
+        total = len(accs)
+        prog = {'done': 0, 'lines': {}}
         sm = await q.edit_message_text("⚡ Applying 0%")
+
         async def one(i, acc):
             try:
-                rr = await apply_profile(acc, nm[i%len(nm)] if nm else '', ph[i%len(ph)] if ph else None, bio, ch, bot=c.bot)
+                rr = await apply_profile(acc, nm[i % len(nm)] if nm else '', ph[i % len(ph)] if ph else None, bio, ch, bot=c.bot)
                 ok = sum(1 for x in rr if x.startswith('✅'))
                 prog['lines'][i] = f"#{i+1} · {get_display_name(acc)[:15]}: ok {ok}"
-            except Exception as e: prog['lines'][i] = f"#{i+1}: fail {str(e)[:30]}"
+            except Exception as e:
+                prog['lines'][i] = f"#{i+1}: fail {str(e)[:30]}"
             prog['done'] += 1
-        tasks = [asyncio.create_task(one(i,a)) for i,a in enumerate(accs)]
+
+        tasks = [asyncio.create_task(one(i, a)) for i, a in enumerate(accs)]
         while any(not t.done() for t in tasks):
-            pct = int(prog['done']*100/total)
+            pct = int(prog['done'] * 100 / total)
             try: await sm.edit_text(f"{'█'*(pct//10)}{'░'*(10-pct//10)} {pct}%")
             except: pass
             await asyncio.sleep(2)
         await asyncio.gather(*tasks, return_exceptions=True)
-        await sm.edit_text("✅ *Done!*\n\n" + "\n".join(prog['lines'][i] for i in sorted(prog['lines'])), parse_mode='Markdown', reply_markup=BACK_KB)
+        await sm.edit_text("✅ *Done!*\n\n" + "\n".join(prog['lines'][i] for i in sorted(prog['lines'])),
+                           parse_mode='Markdown', reply_markup=BACK_KB)
 
-    # owner-only
+    # ============ BACKUP MENU ============
+    elif d == 'backup_menu':
+        cfg = get_user_backup(uid)
+        status = "🟢 ON" if cfg.get('enabled') else "🔴 OFF"
+        n_ids = len(cfg.get('backup_ids', []))
+        del_at = cfg.get('delete_after') or "—"
+        kb = [
+            [InlineKeyboardButton(f"🔘 Status: {status}", callback_data='backup_toggle')],
+            [InlineKeyboardButton(f"📦 Backup IDs ({n_ids})", callback_data='backup_ids_menu')],
+            [InlineKeyboardButton(f"🕐 Start: {cfg.get('start_time','—')} IST", callback_data='backup_set_start')],
+            [InlineKeyboardButton(f"🕐 End: {cfg.get('end_time','—')} IST", callback_data='backup_set_end')],
+            [InlineKeyboardButton(f"🗑️ Delete at: {del_at[:19]}", callback_data='backup_set_delete')],
+            [InlineKeyboardButton("🧪 Test Now", callback_data='backup_test')],
+            [InlineKeyboardButton("❌ Clear Backup", callback_data='backup_clear')],
+            [InlineKeyboardButton("🔙 Back", callback_data='back_main')],
+        ]
+        await q.edit_message_text(
+            f"🌙 *Backup Manager*\n\n"
+            f"Status: {status}\nBackup IDs: {n_ids}\n"
+            f"Window: {cfg.get('start_time')} → {cfg.get('end_time')} (IST)\n"
+            f"Auto-delete at: {del_at}\n\n"
+            f"⏰ Start-এ main ID stop, backup ID start\n"
+            f"⏰ End-এ উল্টোটা",
+            parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+
+    elif d == 'backup_toggle':
+        cfg = get_user_backup(uid)
+        cfg['enabled'] = not cfg.get('enabled', False)
+        if cfg['enabled']:
+            cfg['last_run_date'] = None
+        set_user_backup(uid, cfg)
+        status = "🟢 ON" if cfg['enabled'] else "🔴 OFF"
+        await q.edit_message_text(f"✅ Backup: {status}", reply_markup=BACK_KB)
+
+    elif d == 'backup_ids_menu':
+        cfg = get_user_backup(uid)
+        all_accs = get_all_accounts(uid)
+        selected = set(cfg.get('backup_ids', []))
+        kb = []
+        for a in all_accs:
+            aid = a['id']
+            mark = "✅" if aid in selected else "⬜"
+            ti = {'env': '💚', 'dynamic': '💙', 'phone_auth': '📱'}.get(a.get('type', ''), '❓')
+            kb.append([InlineKeyboardButton(
+                f"{mark} {ti} {get_display_name(a)[:22]}",
+                callback_data=f'backup_tog_{aid}'
+            )])
+        kb.append([InlineKeyboardButton("🗑️ Clear All", callback_data='backup_ids_clear')])
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data='backup_menu')])
+        await q.edit_message_text(
+            f"📦 *Select Backup IDs* ({len(selected)} selected)\n\n"
+            f"যেগুলো টিক দিবে সেগুলোই backup হিসেবে কাজ করবে",
+            parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+
+    elif d.startswith('backup_tog_'):
+        aid = d.replace('backup_tog_', '')
+        cfg = get_user_backup(uid)
+        ids = cfg.get('backup_ids', [])
+        if aid in ids:
+            ids.remove(aid)
+        else:
+            ids.append(aid)
+        cfg['backup_ids'] = ids
+        set_user_backup(uid, cfg)
+        all_accs = get_all_accounts(uid)
+        selected = set(ids)
+        kb = []
+        for a in all_accs:
+            mark = "✅" if a['id'] in selected else "⬜"
+            ti = {'env': '💚', 'dynamic': '💙', 'phone_auth': '📱'}.get(a.get('type', ''), '❓')
+            kb.append([InlineKeyboardButton(
+                f"{mark} {ti} {get_display_name(a)[:22]}",
+                callback_data=f'backup_tog_{a["id"]}'
+            )])
+        kb.append([InlineKeyboardButton("🗑️ Clear All", callback_data='backup_ids_clear')])
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data='backup_menu')])
+        await q.edit_message_text(
+            f"📦 *Select Backup IDs* ({len(selected)} selected)",
+            parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+
+    elif d == 'backup_ids_clear':
+        cfg = get_user_backup(uid)
+        cfg['backup_ids'] = []
+        set_user_backup(uid, cfg)
+        await q.edit_message_text("🗑️ Backup IDs cleared", reply_markup=BACK_KB)
+
+    elif d == 'backup_set_start':
+        c.user_data['awaiting'] = 'backup_start'
+        await q.edit_message_text(
+            "🕐 *Enter backup START time*\n\nFormat: `HH:MM` (24-hour, IST)\nExample: `03:00`",
+            parse_mode='Markdown', reply_markup=BACK_KB)
+
+    elif d == 'backup_set_end':
+        c.user_data['awaiting'] = 'backup_end'
+        await q.edit_message_text(
+            "🕐 *Enter backup END time*\n\nFormat: `HH:MM` (24-hour, IST)\nExample: `09:00`",
+            parse_mode='Markdown', reply_markup=BACK_KB)
+
+    elif d == 'backup_set_delete':
+        c.user_data['awaiting'] = 'backup_delete'
+        await q.edit_message_text(
+            "🗑️ *Auto-delete backup config*\n\n"
+            "Format: `2h` / `30m` / `1d` / `off`",
+            parse_mode='Markdown', reply_markup=BACK_KB)
+
+    elif d == 'backup_test':
+        cfg = get_user_backup(uid)
+        if not cfg.get('backup_ids'):
+            await q.edit_message_text("❌ Backup IDs সিলেক্ট করুন আগে", reply_markup=BACK_KB)
+            return
+        await q.edit_message_text("🧪 Testing backup switch...", reply_markup=BACK_KB)
+        for a in get_all_accounts(uid):
+            if a['id'] not in cfg['backup_ids']:
+                stop_account(a['id'])
+        for bid in cfg['backup_ids']:
+            acc = None
+            for a in get_all_accounts(uid):
+                if a['id'] == bid:
+                    acc = a
+                    break
+            if acc and not account_stats.get(bid, {}).get('running', False):
+                stop_flags[bid] = False
+                running_tasks[bid] = asyncio.create_task(run_account_messaging(acc, uid))
+        await q.edit_message_text(
+            f"✅ *Test switch done*\nMain stopped, {len(cfg['backup_ids'])} backups started",
+            parse_mode='Markdown', reply_markup=BACK_KB)
+
+    elif d == 'backup_clear':
+        set_user_backup(uid, {
+            'enabled': False, 'backup_ids': [],
+            'start_time': '03:00', 'end_time': '09:00',
+            'delete_after': None, 'last_run_date': None,
+        })
+        await q.edit_message_text("🗑️ Backup config cleared", reply_markup=BACK_KB)
+
+    # ============ ADMIN PANEL ============
     elif d == 'admin_panel':
         if not is_owner(uid): return
         kb = [[InlineKeyboardButton("➕ Add / Edit Admin", callback_data='add_admin'),
@@ -761,138 +1529,185 @@ async def button_click(u, c):
               [InlineKeyboardButton("📢 Broadcast", callback_data='broadcast_menu')],
               [InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
         await q.edit_message_text("👑 *Admin Panel* _(Owner only)_", parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+
     elif d == 'broadcast_menu':
         if not is_owner(uid): return
         c.user_data['awaiting'] = 'broadcast_capture'
-        await q.edit_message_text("📢 *Broadcast*\nNow send text / photo / video — goes to all admins.\nCancel = /cancel",
+        await q.edit_message_text("📢 *Broadcast*\nSend text / photo / video.\nCancel = /cancel",
                                   parse_mode='Markdown', reply_markup=BACK_KB)
+
     elif d == 'set_admin_limit':
         if not is_owner(uid): return
         c.user_data['awaiting'] = 'admin_limit'
         await q.edit_message_text("🔢 Format: `USER_ID NUMBER`\n(0 = unlimited)", parse_mode='Markdown', reply_markup=BACK_KB)
+
     elif d == 'add_admin':
         if not is_owner(uid): return
         c.user_data['awaiting'] = 'add_admin'
         await q.edit_message_text(
             "➕ *Add / Edit Admin*\n\nFormat:\n`USER_ID [+|-|=]TIME`\n\n"
-            "TIME mixes units — seconds / minutes / hours / days / weeks:\n"
-            "🔸 `111 +2d` → add 2 days\n"
-            "🔸 `111 +2d 5h 30m` → add 2d+5h+30m\n"
-            "🔸 `111 -1d 2h` → subtract\n"
-            "🔸 `111 +1w` → add 1 week\n"
-            "🔸 `111 =45s` → exactly 45 seconds\n"
-            "🔸 `111 =perm` → permanent\n"
-            "🔸 `111 -10s` → reduce\n\nName apne aap ID ke saath dikhega.",
+            "🔸 `111 +2d` → add 2 days\n🔸 `111 +2d 5h 30m` → mixed\n"
+            "🔸 `111 -1d 2h` → subtract\n🔸 `111 =perm` → permanent",
             parse_mode='Markdown', reply_markup=BACK_KB)
+
     elif d == 'toggle_startmsg':
         if not is_owner(uid): return
-        SHOW_START_TO_OTHERS = not SHOW_START_TO_OTHERS; save_data()
-        await q.edit_message_text(f"👻 Show msg to non-admins on /start: {'ON' if SHOW_START_TO_OTHERS else 'OFF'}", reply_markup=BACK_KB)
+        SHOW_START_TO_OTHERS = not SHOW_START_TO_OTHERS
+        save_data()
+        await q.edit_message_text(f"👻 Start msg to non-admins: {'ON' if SHOW_START_TO_OTHERS else 'OFF'}", reply_markup=BACK_KB)
+
     elif d == 'admin_list':
         if not is_owner(uid): return
         admins = load_admins()
-        if not admins: await q.edit_message_text("❌ No admins yet", reply_markup=BACK_KB); return
-        txt = "📋 *Admins*\n\n"; kb = []
+        if not admins:
+            await q.edit_message_text("❌ No admins yet", reply_markup=BACK_KB)
+            return
+        txt = "📋 *Admins*\n\n"
+        kb = []
         for a in admins:
             accs = get_all_accounts(a['user_id'])
-            cap = a.get('max_accounts'); cap_str = f"🔢 Accounts: {len(accs)}" if not cap else f"🔢 Accounts: {len(accs)}/{cap}"
+            cap = a.get('max_accounts')
+            cap_str = f"🔢 Accounts: {len(accs)}" if not cap else f"🔢 Accounts: {len(accs)}/{cap}"
             txt += f"👤 {admin_label(a['user_id'])}\n ⏳ {remaining_time_str(a.get('expires_at'))}\n {cap_str}\n\n"
             kb.append([InlineKeyboardButton(f"🕐 Edit · {get_names_short(a['user_id'])} ({a['user_id']})", callback_data=f'admin_edit_{a["user_id"]}')])
             kb.append([InlineKeyboardButton(f"🗑️ Delete · {get_names_short(a['user_id'])} ({a['user_id']})", callback_data=f'del_admin_{a["user_id"]}')])
         kb.append([InlineKeyboardButton("🔙 Back", callback_data='admin_panel')])
         await q.edit_message_text(txt, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(kb))
+
     elif d.startswith('admin_edit_'):
         if not is_owner(uid): return
-        t = int(d.replace('admin_edit_',''))
+        t = int(d.replace('admin_edit_', ''))
         a = get_admin(t)
-        if not a: await q.edit_message_text("❌ Not an admin", reply_markup=BACK_KB); return
+        if not a:
+            await q.edit_message_text("❌ Not an admin", reply_markup=BACK_KB)
+            return
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("+30 days", callback_data=f'admop_{t}_+30'), InlineKeyboardButton("+100 days", callback_data=f'admop_{t}_+100')],
-            [InlineKeyboardButton("-10 days", callback_data=f'admop_{t}_-10'), InlineKeyboardButton("-30 days", callback_data=f'admop_{t}_-30')],
-            [InlineKeyboardButton("♾️ Permanent", callback_data=f'admop_{t}_=perm'), InlineKeyboardButton("⛔ Expire", callback_data=f'admop_{t}_=0')],
+            [InlineKeyboardButton("+30 days", callback_data=f'admop_{t}_+30'),
+             InlineKeyboardButton("+100 days", callback_data=f'admop_{t}_+100')],
+            [InlineKeyboardButton("-10 days", callback_data=f'admop_{t}_-10'),
+             InlineKeyboardButton("-30 days", callback_data=f'admop_{t}_-30')],
+            [InlineKeyboardButton("♾️ Permanent", callback_data=f'admop_{t}_=perm'),
+             InlineKeyboardButton("⛔ Expire", callback_data=f'admop_{t}_=0')],
             [InlineKeyboardButton("🔙 Back", callback_data='admin_list')]])
         accs = get_all_accounts(t)
         names = "\n".join(f" • {get_display_name(x)}" for x in accs[:10]) or "  _none_"
         await q.edit_message_text(f"👤 {admin_label(t)}\n⏳ {remaining_time_str(a.get('expires_at'))}\n📊 Accounts:\n{names}",
                                   parse_mode='Markdown', reply_markup=kb)
+
     elif d.startswith('admop_'):
         if not is_owner(uid): return
         try:
-            body = d.replace('admop_',''); t_s, op = body.rsplit('_',1); target = int(t_s)
+            body = d.replace('admop_', '')
+            t_s, op = body.rsplit('_', 1)
+            target = int(t_s)
         except Exception:
-            await q.edit_message_text("❌ Parse error", reply_markup=BACK_KB); return
+            await q.edit_message_text("❌ Parse error", reply_markup=BACK_KB)
+            return
         now = datetime.now()
-        if op == 'perm': await apply_admin_time(target, '=', None, q=q)
+        if op == 'perm':
+            await apply_admin_time(target, '=', None, q=q)
         elif op == '0':
             a = get_admin(target)
-            a['expires_at'] = now.isoformat() if a else None
-            if a: a['expires_at'] = now.isoformat(); a['updated_at']=now.isoformat(); replace_admin(target,a)
+            if a:
+                a['expires_at'] = now.isoformat()
+                a['updated_at'] = now.isoformat()
+                replace_admin(target, a)
             await q.edit_message_text(f"⛔ Admin expired: {admin_label(target)}", reply_markup=BACK_KB)
         else:
-            amt = int(op.replace('+','').replace('-','')); o = '+' if op.startswith('+') else '-'
+            amt = int(op.replace('+', '').replace('-', ''))
+            o = '+' if op.startswith('+') else '-'
             nd = now + timedelta(days=amt)
             await apply_admin_time(target, o, nd, q=q)
+
     elif d.startswith('del_admin_'):
         if not is_owner(uid): return
-        tt = int(d.replace('del_admin_',''))
+        tt = int(d.replace('del_admin_', ''))
         lbl = admin_label(tt)
-        save_admins([a for a in load_admins() if a['user_id'] != tt]); stop_accounts_of(tt)
+        save_admins([a for a in load_admins() if a['user_id'] != tt])
+        stop_accounts_of(tt)
         await q.edit_message_text(f"🗑️ Admin deleted: {lbl}\n(accounts stopped)", reply_markup=BACK_KB)
+
     elif d == 'phone_login':
         c.user_data['awaiting'] = 'phone_number'
-        await q.edit_message_text("📱 *Phone Login*\nSend number in intl. format (add country code).\nIndia: `+91XXXXXXXXXX`",
+        await q.edit_message_text("📱 *Phone Login*\nSend number in intl. format.\nIndia: `+91XXXXXXXXXX`",
                                   parse_mode='Markdown', reply_markup=BACK_KB)
+
     elif d == 'add_account':
-        c.user_data['awaiting'] = 'add_account'; await q.edit_message_text("🔑 *Session Login*\nPaste your session string:", parse_mode='Markdown', reply_markup=BACK_KB)
+        c.user_data['awaiting'] = 'add_account'
+        await q.edit_message_text("🔑 *Session Login*\nPaste session string:", parse_mode='Markdown', reply_markup=BACK_KB)
+
     elif d == 'delete_account':
         accs = get_all_accounts(uid)
-        if not accs: await q.edit_message_text("❌ No accounts", reply_markup=BACK_KB); return
+        if not accs:
+            await q.edit_message_text("❌ No accounts", reply_markup=BACK_KB)
+            return
         kb = []
         for i, a in enumerate(accs, 1):
-            ti = {'env':'💚','dynamic':'💙','phone_auth':'📱'}.get(a.get('type',''),'❓')
+            ti = {'env': '💚', 'dynamic': '💙', 'phone_auth': '📱'}.get(a.get('type', ''), '❓')
             kb.append([InlineKeyboardButton(f"{ti} #{i} · {get_display_name(a)[:20]}", callback_data=f'del_acc_{a["id"]}')])
-        kb += [[InlineKeyboardButton("🗑️ Delete ALL", callback_data='del_all_accounts'), InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
+        kb += [[InlineKeyboardButton("🗑️ Delete ALL", callback_data='del_all_accounts'),
+                InlineKeyboardButton("🔙 Back", callback_data='back_main')]]
         await q.edit_message_text("Delete which?", reply_markup=InlineKeyboardMarkup(kb))
+
     elif d == 'del_all_accounts':
         dd = [a for a in get_all_accounts(uid) if a.get('type') != 'env']
-        kb = [[InlineKeyboardButton("☠️ YES Delete All", callback_data='del_all_confirm'), InlineKeyboardButton("Cancel", callback_data='delete_account')]]
+        kb = [[InlineKeyboardButton("☠️ YES Delete All", callback_data='del_all_confirm'),
+               InlineKeyboardButton("Cancel", callback_data='delete_account')]]
         await q.edit_message_text(f"⚠️ Delete {len(dd)} accounts?", reply_markup=InlineKeyboardMarkup(kb))
+
     elif d == 'del_all_confirm':
         n = 0
         for a in get_all_accounts(uid):
             if a.get('type') == 'env': continue
-            stop_account(a['id']); remove_account_by_id(a['id']); await disconnect_client(a['id']); n += 1
+            stop_account(a['id'])
+            remove_account_by_id(a['id'])
+            await disconnect_client(a['id'])
+            n += 1
         await q.edit_message_text(f"🗑️ Deleted {n}", reply_markup=BACK_KB)
+
     elif d.startswith('del_acc_'):
-        acc_id = d.replace('del_acc_',''); t = None
+        acc_id = d.replace('del_acc_', '')
+        t = None
         for a in get_all_accounts(uid):
-            if a['id'] == acc_id: t = a; break
-        if not t: await q.edit_message_text("⛔ invalid", reply_markup=BACK_KB); return
+            if a['id'] == acc_id:
+                t = a
+                break
+        if not t:
+            await q.edit_message_text("⛔ invalid", reply_markup=BACK_KB)
+            return
         nm = get_display_name(t)
-        if account_stats.get(acc_id,{}).get('running',False): stop_account(acc_id); await asyncio.sleep(1)
-        remove_account_by_id(acc_id); await disconnect_client(acc_id)
-        for dd in (account_stats, stop_flags, running_tasks, display_names): dd.pop(acc_id, None)
+        if account_stats.get(acc_id, {}).get('running', False):
+            stop_account(acc_id)
+            await asyncio.sleep(1)
+        remove_account_by_id(acc_id)
+        await disconnect_client(acc_id)
+        for dd in (account_stats, stop_flags, running_tasks, display_names):
+            dd.pop(acc_id, None)
         await q.edit_message_text(f"🗑️ Deleted: {nm}", reply_markup=BACK_KB)
+
     elif d == 'back_main':
-        c.user_data['awaiting'] = None; c.user_data.pop('login_id', None)
-        refresh_account_stats(uid); preload_display_names(get_all_accounts(uid))
+        c.user_data['awaiting'] = None
+        c.user_data.pop('login_id', None)
+        refresh_account_stats(uid)
+        preload_display_names(get_all_accounts(uid))
         await q.edit_message_text(main_menu_text(uid), parse_mode='Markdown', reply_markup=main_menu_keyboard(uid))
 
-def get_names_short(uid):
-    info = load_names().get(str(uid))
-    if info and info.get('name'):
-        return info['name'][:14]
-    return str(uid)
 
+# ============ MESSAGE HANDLERS ============
 async def handle_photo(u, c):
     uid = u.effective_user.id
     eu = u.effective_user
     record_user_info(uid, eu.first_name, eu.last_name, eu.username)
     if not (is_owner(uid) or is_valid_admin(uid)): return
     if c.user_data.get('awaiting') == 'def_add_photo':
-        cfg = get_default_profile(); ph = cfg.get('photos',[]); ph.append(u.message.photo[-1].file_id)
-        cfg['photos'] = ph; save_default_profile(cfg); c.user_data['awaiting'] = None
-        await u.message.reply_text(f"🖼️ Logo #{len(ph)} saved", reply_markup=BACK_KB); return
+        cfg = get_default_profile()
+        ph = cfg.get('photos', [])
+        ph.append(u.message.photo[-1].file_id)
+        cfg['photos'] = ph
+        save_default_profile(cfg)
+        c.user_data['awaiting'] = None
+        await u.message.reply_text(f"🖼️ Logo #{len(ph)} saved", reply_markup=BACK_KB)
+        return
     if c.user_data.get('awaiting') == 'broadcast_capture' and is_owner(uid):
         if u.message.video:
             c.user_data['awaiting'] = None
@@ -904,68 +1719,199 @@ async def handle_photo(u, c):
             c.user_data['awaiting'] = None
             await do_broadcast(u.message, c.bot, uid, u.message.caption or "", u.message.animation.file_id, 'animation')
 
+
 async def handle_text(u, c):
     uid = u.effective_user.id
     eu = u.effective_user
     record_user_info(uid, eu.first_name, eu.last_name, eu.username)
     if not (is_owner(uid) or is_valid_admin(uid)): return
-    text = u.message.text.strip(); aw = c.user_data.get('awaiting')
+    text = u.message.text.strip()
+    aw = c.user_data.get('awaiting')
 
     if aw == 'broadcast_capture' and is_owner(uid):
         c.user_data['awaiting'] = None
         await do_broadcast(u.message, c.bot, uid, text)
         return
 
-    # ---- Admin add/edit - text form ----
     if aw == 'add_admin':
         c.user_data['awaiting'] = None
         if not is_owner(uid): return
-        try: target, op, nd = parse_admin_cmd(text)
+        try:
+            target, op, nd = parse_admin_cmd(text)
         except Exception:
-            await u.message.reply_text("❌ Format: `USER_ID [+|-|=]TIME`\ne.g. `111 +2d 5h 30m`, `222 +1w`, `333 =perm`",
-                                        parse_mode='Markdown', reply_markup=BACK_KB); return
-        if target == OWNER_ID: await u.message.reply_text("❌ Owner cannot be edited.", reply_markup=BACK_KB); return
+            await u.message.reply_text("❌ Format: `USER_ID [+|-|=]TIME`", parse_mode='Markdown', reply_markup=BACK_KB)
+            return
+        if target == OWNER_ID:
+            await u.message.reply_text("❌ Owner cannot be edited.", reply_markup=BACK_KB)
+            return
         await apply_admin_time(target, op, nd, text_ui=u.message)
         return
+
     if aw == 'admin_limit':
         c.user_data['awaiting'] = None
         if not is_owner(uid): return
         try:
-            p = text.split(); t = int(p[0]); cap = int(p[1]); cap < 0 and (_ for _ in () ).throw(ValueError())
+            p = text.split()
+            t = int(p[0]); cap = int(p[1])
+            if cap < 0: raise ValueError()
         except Exception:
-            await u.message.reply_text("❌ `USER_ID NUMBER`", reply_markup=BACK_KB); return
-        admins = load_admins(); found = False
+            await u.message.reply_text("❌ `USER_ID NUMBER`", reply_markup=BACK_KB)
+            return
+        admins = load_admins()
+        found = False
         for a in admins:
-            if a['user_id'] == t: a['max_accounts'] = (None if cap == 0 else cap); found = True
-        if not found: await u.message.reply_text(f"❌ Admin not found: {t}", reply_markup=BACK_KB); return
+            if a['user_id'] == t:
+                a['max_accounts'] = (None if cap == 0 else cap)
+                found = True
+        if not found:
+            await u.message.reply_text(f"❌ Admin not found: {t}", reply_markup=BACK_KB)
+            return
         save_admins(admins)
-        await u.message.reply_text(f"✅ {admin_label(t)} limit: {'unlimited' if cap == 0 else str(cap)}", reply_markup=BACK_KB); return
+        await u.message.reply_text(f"✅ {admin_label(t)} limit: {'unlimited' if cap == 0 else str(cap)}", reply_markup=BACK_KB)
+        return
+
     if aw == 'def_add_name':
-        c.user_data['awaiting'] = None; cfg = get_default_profile(); nm = cfg.get('names',[])
-        nn = [x.strip() for x in text.split('\n') if x.strip()]; nm.extend(nn); cfg['names']=nm; save_default_profile(cfg)
-        await u.message.reply_text(f"✅ Added {len(nn)} (total {len(nm)})", reply_markup=BACK_KB); return
+        c.user_data['awaiting'] = None
+        cfg = get_default_profile()
+        nm = cfg.get('names', [])
+        nn = [x.strip() for x in text.split('\n') if x.strip()]
+        nm.extend(nn)
+        cfg['names'] = nm
+        save_default_profile(cfg)
+        await u.message.reply_text(f"✅ Added {len(nn)} (total {len(nm)})", reply_markup=BACK_KB)
+        return
+
     if aw == 'def_bio':
-        c.user_data['awaiting'] = None; cfg = get_default_profile(); cfg['bio']=text; save_default_profile(cfg)
-        await u.message.reply_text("✅ Bio saved", reply_markup=BACK_KB); return
+        c.user_data['awaiting'] = None
+        cfg = get_default_profile()
+        cfg['bio'] = text
+        save_default_profile(cfg)
+        await u.message.reply_text("✅ Bio saved", reply_markup=BACK_KB)
+        return
+
     if aw == 'def_chan':
-        c.user_data['awaiting'] = None; cfg = get_default_profile()
-        cfg['channels']=[x.strip() for x in re.split(r'[\n,]+', text) if x.strip()]; save_default_profile(cfg)
-        await u.message.reply_text("✅ Links saved", reply_markup=BACK_KB); return
+        c.user_data['awaiting'] = None
+        cfg = get_default_profile()
+        cfg['channels'] = [x.strip() for x in re.split(r'[\n,]+', text) if x.strip()]
+        save_default_profile(cfg)
+        await u.message.reply_text("✅ Links saved", reply_markup=BACK_KB)
+        return
+
     if aw == 'add_message':
-        c.user_data['awaiting'] = None; m = load_messages_for(uid); m.append(text); save_messages_for(uid, m)
-        await u.message.reply_text(f"✅ Added, total {len(m)}", reply_markup=BACK_KB); return
+        c.user_data['awaiting'] = None
+        m = load_messages_for(uid)
+        m.append(text)
+        save_messages_for(uid, m)
+        await u.message.reply_text(f"✅ Added, total {len(m)}", reply_markup=BACK_KB)
+        return
+
+    if aw == 'backup_start':
+        c.user_data['awaiting'] = None
+        hm = parse_hhmm(text.strip())
+        if not hm:
+            await u.message.reply_text("❌ Format: `HH:MM` (যেমন 03:00)", parse_mode='Markdown', reply_markup=BACK_KB)
+            return
+        cfg = get_user_backup(uid)
+        cfg['start_time'] = f"{hm[0]:02d}:{hm[1]:02d}"
+        cfg['last_run_date'] = None
+        set_user_backup(uid, cfg)
+        await u.message.reply_text(f"✅ Start time: {cfg['start_time']} IST", reply_markup=BACK_KB)
+        return
+
+    if aw == 'backup_end':
+        c.user_data['awaiting'] = None
+        hm = parse_hhmm(text.strip())
+        if not hm:
+            await u.message.reply_text("❌ Format: `HH:MM`", parse_mode='Markdown', reply_markup=BACK_KB)
+            return
+        cfg = get_user_backup(uid)
+        cfg['end_time'] = f"{hm[0]:02d}:{hm[1]:02d}"
+        set_user_backup(uid, cfg)
+        await u.message.reply_text(f"✅ End time: {cfg['end_time']} IST", reply_markup=BACK_KB)
+        return
+
+    if aw == 'backup_delete':
+        c.user_data['awaiting'] = None
+        cfg = get_user_backup(uid)
+        if text.strip().lower() == 'off':
+            cfg['delete_after'] = None
+            set_user_backup(uid, cfg)
+            await u.message.reply_text("✅ Auto-delete: OFF", reply_markup=BACK_KB)
+            return
+        try:
+            delta = parse_duration_delta(text.strip())
+            if not delta: raise ValueError()
+            del_at = (ist_now() + delta).isoformat()
+            cfg['delete_after'] = del_at
+            set_user_backup(uid, cfg)
+            await u.message.reply_text(f"✅ Auto-delete: `{del_at[:19]}` (IST)", parse_mode='Markdown', reply_markup=BACK_KB)
+        except Exception:
+            await u.message.reply_text("❌ Format: `2h`, `30m`, `1d`, or `off`", parse_mode='Markdown', reply_markup=BACK_KB)
+        return
+
+    if aw == 'set_min':
+        c.user_data['awaiting'] = None
+        mn, mx, cyc = speed_for(uid)
+        try:
+            v = float(text)
+            if 0.01 <= v < float(mx):
+                set_speed(uid, min_i=v)
+            else:
+                raise ValueError()
+        except:
+            await u.message.reply_text(f"❌ 0.01 থেকে {mx} এর মধ্যে দিন", reply_markup=BACK_KB)
+            return
+        mn, mx, cyc = speed_for(uid)
+        await u.message.reply_text(f"✅ Min {mn}s", reply_markup=BACK_KB)
+        return
+
+    if aw == 'set_max':
+        c.user_data['awaiting'] = None
+        mn, mx, cyc = speed_for(uid)
+        try:
+            v = float(text)
+            if v > float(mn):
+                set_speed(uid, max_i=v)
+            else:
+                raise ValueError()
+        except:
+            await u.message.reply_text(f"❌ > {mn} হতে হবে", reply_markup=BACK_KB)
+            return
+        mn, mx, cyc = speed_for(uid)
+        await u.message.reply_text(f"✅ Max {mx}s", reply_markup=BACK_KB)
+        return
+
+    if aw == 'set_cycle':
+        c.user_data['awaiting'] = None
+        try:
+            v = float(text)
+            if v >= 5:
+                set_speed(uid, cycle=v)
+            else:
+                raise ValueError()
+        except:
+            await u.message.reply_text("❌ >= 5 হতে হবে", reply_markup=BACK_KB)
+            return
+        mn, mx, cyc = speed_for(uid)
+        await u.message.reply_text(f"✅ Cycle {cyc}s", reply_markup=BACK_KB)
+        return
+
     if aw == 'phone_number':
         c.user_data['awaiting'] = None
         try:
             ph = text.strip()
             if not ph.startswith('+'): ph = '+' + ph
             if not re.match(r'^\+\d{7,15}$', ph):
-                await u.message.reply_text("❌ Invalid! Example `+91XXXXXXXXXX`", reply_markup=BACK_KB); return
+                await u.message.reply_text("❌ Invalid! Example `+91XXXXXXXXXX`", reply_markup=BACK_KB)
+                return
             reached, rm = account_limit_reached(uid)
-            if reached: await u.message.reply_text(rm, reply_markup=BACK_KB); return
+            if reached:
+                await u.message.reply_text(rm, reply_markup=BACK_KB)
+                return
             if not API_ID_1 or not API_HASH_1:
-                await u.message.reply_text("❌ API keys missing on server!", reply_markup=BACK_KB); return
-            for k in [k for k,v in phone_login_states.items() if v.get('owner_id')==uid]:
+                await u.message.reply_text("❌ API keys missing on server!", reply_markup=BACK_KB)
+                return
+            for k in [k for k, v in phone_login_states.items() if v.get('owner_id') == uid]:
                 old = phone_login_states.pop(k, None)
                 if old and old.get('client'):
                     try: await old['client'].disconnect()
@@ -974,11 +1920,14 @@ async def handle_text(u, c):
             client = None
             try:
                 client = TelegramClient(StringSession(), API_ID_1, API_HASH_1, receive_updates=False)
-                await client.connect(); sent = await client.send_code_request(ph)
+                await client.connect()
+                sent = await client.send_code_request(ph)
                 lid = gen_unique_id("plogin", uid)
-                phone_login_states[lid] = {'phone':ph,'api_id':API_ID_1,'api_hash':API_HASH_1,'client':client,
-                                           'owner_id':uid,'phone_code_hash':sent.phone_code_hash,'created':datetime.now()}
-                c.user_data['login_id'] = lid; c.user_data['awaiting'] = 'otp_code'
+                phone_login_states[lid] = {'phone': ph, 'api_id': API_ID_1, 'api_hash': API_HASH_1,
+                                           'client': client, 'owner_id': uid,
+                                           'phone_code_hash': sent.phone_code_hash, 'created': datetime.now()}
+                c.user_data['login_id'] = lid
+                c.user_data['awaiting'] = 'otp_code'
                 await sm.edit_text("✅ OTP sent! Enter the code:", reply_markup=BACK_KB)
             except FloodWaitError as fw:
                 try:
@@ -996,20 +1945,23 @@ async def handle_text(u, c):
             try: await u.message.reply_text(f"❌ {str(e)[:120]}", reply_markup=BACK_KB)
             except: pass
         return
+
     if aw == 'otp_code':
-        lid = c.user_data.get('login_id'); st = phone_login_states.get(lid) if lid else None
+        lid = c.user_data.get('login_id')
+        st = phone_login_states.get(lid) if lid else None
         if not st:
             c.user_data['awaiting'] = None
-            await u.message.reply_text("⏳ Flow reset. Phone Login again.", reply_markup=BACK_KB); return
-        code = text.strip().replace(' ','').replace('-','')
-        if not code.isdigit(): await u.message.reply_text("❌ digits only", reply_markup=BACK_KB); return
+            await u.message.reply_text("⏳ Flow reset. Phone Login again.", reply_markup=BACK_KB)
+            return
+        code = text.strip().replace(' ', '').replace('-', '')
+        if not code.isdigit():
+            await u.message.reply_text("❌ digits only", reply_markup=BACK_KB)
+            return
         client = st['client']
         try:
             await client.sign_in(phone=st['phone'], code=code, phone_code_hash=st['phone_code_hash'])
         except SessionPasswordNeededError:
             c.user_data['awaiting'] = '2fa_password'
-            await client.send_code_request(st['phone']) if False else None
-            # need reply holder
             try: await u.message.reply_text("🔐 2FA password:", reply_markup=BACK_KB)
             except: pass
             return
@@ -1019,24 +1971,33 @@ async def handle_text(u, c):
             return
         except PhoneCodeExpiredError:
             try:
-                sent = await client.send_code_request(st['phone']); st['phone_code_hash']=sent.phone_code_hash
+                sent = await client.send_code_request(st['phone'])
+                st['phone_code_hash'] = sent.phone_code_hash
                 await u.message.reply_text("🔄 New code sent", reply_markup=BACK_KB)
-            except Exception as e: await u.message.reply_text(f"❌ {str(e)[:120]}", reply_markup=BACK_KB)
+            except Exception as e:
+                await u.message.reply_text(f"❌ {str(e)[:120]}", reply_markup=BACK_KB)
             return
         except Exception as e:
             try: await u.message.reply_text(f"❌ {str(e)[:150]}", reply_markup=BACK_KB)
             except: pass
             return
-        me = None; fresh = None
+        me = None
+        fresh = None
         try: await client.disconnect()
         except: pass
         try:
             c2 = TelegramClient(StringSession(), st['api_id'], st['api_hash'], receive_updates=False)
-            await c2.connect(); await c2.sign_in(phone=st['phone'], code=code, phone_code_hash=st['phone_code_hash'])
-            me = await c2.get_me(); fresh = c2.session.save(); await c2.disconnect()
+            await c2.connect()
+            await c2.sign_in(phone=st['phone'], code=code, phone_code_hash=st['phone_code_hash'])
+            me = await c2.get_me()
+            fresh = c2.session.save()
+            await c2.disconnect()
         except Exception:
             try:
-                await client.connect(); me = await client.get_me(); fresh = client.session.save(); await client.disconnect()
+                await client.connect()
+                me = await client.get_me()
+                fresh = client.session.save()
+                await client.disconnect()
             except Exception as e:
                 try: await u.message.reply_text(f"❌ {str(e)[:120]}", reply_markup=BACK_KB)
                 except: pass
@@ -1047,35 +2008,45 @@ async def handle_text(u, c):
             except: pass
             return
         au = load_auth_sessions()
-        if any(s.get('owner_id')==st['owner_id'] and s.get('phone')==st['phone'] for s in au):
+        if any(s.get('owner_id') == st['owner_id'] and s.get('phone') == st['phone'] for s in au):
             try: await u.message.reply_text("❌ Number already added", reply_markup=BACK_KB)
             except: pass
             return
-        nid = gen_unique_id("phone", st['owner_id']); fname = getattr(me,'first_name',None) or "User"
-        au.append({'id':nid,'name':fname,'api_id':st['api_id'],'api_hash':st['api_hash'],'session_string':fresh,
-                   'phone':st['phone'],'user_id':getattr(me,'id',None),'owner_id':st['owner_id'],
-                   'login_time':datetime.now().isoformat()})
-        save_auth_sessions(au); display_names[nid] = fname
-        c.user_data['awaiting'] = None; c.user_data.pop('login_id', None)
-        phone_login_states.pop(lid, None); refresh_account_stats(st['owner_id'])
+        nid = gen_unique_id("phone", st['owner_id'])
+        fname = getattr(me, 'first_name', None) or "User"
+        au.append({'id': nid, 'name': fname, 'api_id': st['api_id'], 'api_hash': st['api_hash'],
+                   'session_string': fresh, 'phone': st['phone'],
+                   'user_id': getattr(me, 'id', None), 'owner_id': st['owner_id'],
+                   'login_time': datetime.now().isoformat()})
+        save_auth_sessions(au)
+        display_names[nid] = fname
+        c.user_data['awaiting'] = None
+        c.user_data.pop('login_id', None)
+        phone_login_states.pop(lid, None)
+        refresh_account_stats(st['owner_id'])
         try: await u.message.reply_text(f"✅ Logged in! 👤 {fname}", reply_markup=BACK_KB)
         except: pass
         return
+
     if aw == '2fa_password':
-        lid = c.user_data.get('login_id'); st = phone_login_states.get(lid) if lid else None
+        lid = c.user_data.get('login_id')
+        st = phone_login_states.get(lid) if lid else None
         if not st:
             c.user_data['awaiting'] = None
             try: await u.message.reply_text("⏳ restart login", reply_markup=BACK_KB)
             except: pass
             return
         client = st['client']
-        try: await client.sign_in(password=text.strip())
+        try:
+            await client.sign_in(password=text.strip())
         except Exception as e:
             try: await u.message.reply_text(f"❌ {str(e)[:120]}", reply_markup=BACK_KB)
             except: pass
             return
         try:
-            me = await client.get_me(); fresh = client.session.save(); await client.disconnect()
+            me = await client.get_me()
+            fresh = client.session.save()
+            await client.disconnect()
         except Exception as e:
             try: await u.message.reply_text(f"❌ {str(e)[:120]}", reply_markup=BACK_KB)
             except: pass
@@ -1086,110 +2057,123 @@ async def handle_text(u, c):
             except: pass
             return
         au = load_auth_sessions()
-        nid = gen_unique_id("phone", st['owner_id']); fname = getattr(me,'first_name',None) or "Unknown"
-        au.append({'id':nid,'name':fname,'api_id':st['api_id'],'api_hash':st['api_hash'],'session_string':fresh,
-                   'phone':st['phone'],'user_id':getattr(me,'id',None),'owner_id':st['owner_id'],
-                   'login_time':datetime.now().isoformat()})
-        save_auth_sessions(au); display_names[nid] = fname
-        c.user_data['awaiting'] = None; c.user_data.pop('login_id', None)
-        phone_login_states.pop(lid, None); refresh_account_stats(st['owner_id'])
+        nid = gen_unique_id("phone", st['owner_id'])
+        fname = getattr(me, 'first_name', None) or "Unknown"
+        au.append({'id': nid, 'name': fname, 'api_id': st['api_id'], 'api_hash': st['api_hash'],
+                   'session_string': fresh, 'phone': st['phone'],
+                   'user_id': getattr(me, 'id', None), 'owner_id': st['owner_id'],
+                   'login_time': datetime.now().isoformat()})
+        save_auth_sessions(au)
+        display_names[nid] = fname
+        c.user_data['awaiting'] = None
+        c.user_data.pop('login_id', None)
+        phone_login_states.pop(lid, None)
+        refresh_account_stats(st['owner_id'])
         try: await u.message.reply_text(f"✅ 2FA done 👤 {fname}", reply_markup=BACK_KB)
         except: pass
         return
+
     if aw == 'add_account':
         c.user_data['awaiting'] = None
         try:
             reached, rm = account_limit_reached(uid)
-            if reached: await u.message.reply_text(rm, reply_markup=BACK_KB); return
+            if reached:
+                await u.message.reply_text(rm, reply_markup=BACK_KB)
+                return
             sm = await u.message.reply_text("⏳ Testing...", reply_markup=BACK_KB)
             ok, name, _, fresh = await test_session_only(text)
-            if not ok: await sm.edit_text("❌ Invalid/dead session", reply_markup=BACK_KB); return
+            if not ok:
+                await sm.edit_text("❌ Invalid/dead session", reply_markup=BACK_KB)
+                return
             suc, data = add_dynamic_account(name, fresh, uid)
             await sm.edit_text(f"✅ {name} added!" if suc else f"❌ {data}", reply_markup=BACK_KB)
-        except Exception as e: await u.message.reply_text(f"❌ {str(e)[:160]}", reply_markup=BACK_KB)
+        except Exception as e:
+            await u.message.reply_text(f"❌ {str(e)[:160]}", reply_markup=BACK_KB)
         return
-    if aw == 'set_min':
-        c.user_data['awaiting'] = None
-        mn,mx,cyc = speed_for(uid)
-        try:
-            v = int(text)
-            if 1 <= v < mx: set_speed(uid, min_i=v)
-            else: raise ValueError()
-        except: await u.message.reply_text(f"❌ 1-{mx-1} number", reply_markup=BACK_KB); return
-        mn,mx,cyc = speed_for(uid); await u.message.reply_text(f"✅ Min {mn}s", reply_markup=BACK_KB)
-    elif aw == 'set_max':
-        c.user_data['awaiting'] = None
-        mn,mx,cyc = speed_for(uid)
-        try:
-            v=int(text)
-            if v > mn: set_speed(uid, max_i=v)
-            else: raise ValueError()
-        except: await u.message.reply_text(f"❌ > {mn}", reply_markup=BACK_KB); return
-        mn,mx,cyc = speed_for(uid); await u.message.reply_text(f"✅ Max {mx}s", reply_markup=BACK_KB)
-    elif aw == 'set_cycle':
-        c.user_data['awaiting'] = None
-        try:
-            v=int(text)
-            if v >= 5: set_speed(uid, cycle=v)
-            else: raise ValueError()
-        except: await u.message.reply_text("❌ >= 5", reply_markup=BACK_KB); return
-        mn,mx,cyc = speed_for(uid); await u.message.reply_text(f"✅ Cycle {cyc}s", reply_markup=BACK_KB)
+
 
 async def cancel_command(u, c):
-    uid = u.effective_user.id; eu = u.effective_user
+    uid = u.effective_user.id
+    eu = u.effective_user
     record_user_info(uid, eu.first_name, eu.last_name, eu.username)
-    c.user_data['awaiting'] = None; c.user_data.pop('login_id', None)
+    c.user_data['awaiting'] = None
+    c.user_data.pop('login_id', None)
     await u.message.reply_text("❌ Cancelled.", reply_markup=BACK_KB)
+
 
 async def main():
     global SHOW_START_TO_OTHERS
     await init_env_accounts()
-    try: SHOW_START_TO_OTHERS = json.load(open(data_file)).get('show_start_to_others', True)
+    try:
+        SHOW_START_TO_OTHERS = json.load(open(data_file)).get('show_start_to_others', True)
     except: pass
     load_data()
     for acc in get_all_accounts():
-        aid = acc['id']; account_stats.setdefault(aid, {'sent':0,'running':False,'failed_channels':[]})
-        stop_flags[aid] = False; display_names.setdefault(aid, acc.get('name'))
+        aid = acc['id']
+        account_stats.setdefault(aid, {'sent': 0, 'running': False, 'failed_channels': []})
+        stop_flags[aid] = False
+        display_names.setdefault(aid, acc.get('name'))
     valid = {OWNER_ID}
     for a in load_admins():
         if is_valid_admin(a['user_id']): valid.add(a['user_id'])
     for acc in get_all_accounts():
-        if acc.get('owner_id', OWNER_ID) not in valid: stop_flags[acc['id']] = True
+        if acc.get('owner_id', OWNER_ID) not in valid:
+            stop_flags[acc['id']] = True
     for _ in range(5):
-        try: httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true"); break
-        except: await asyncio.sleep(2)
+        try:
+            httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true")
+            break
+        except:
+            await asyncio.sleep(2)
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(CallbackQueryHandler(button_click))
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.ANIMATION, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    await app.initialize(); await app.start()
+    await app.initialize()
+    await app.start()
     asyncio.create_task(admin_expiry_checker())
+    asyncio.create_task(backup_switch_loop())
     ok = False
     for i in range(5):
         try:
-            await app.updater.start_polling(drop_pending_updates=True, timeout=30, read_timeout=30, connect_timeout=30, allowed_updates=Update.ALL_TYPES)
-            print("✅ BOT RUNNING", flush=True); ok = True; break
+            await app.updater.start_polling(drop_pending_updates=True, timeout=30, read_timeout=30,
+                                            connect_timeout=30, allowed_updates=Update.ALL_TYPES)
+            print("✅ BOT RUNNING v7.0", flush=True)
+            ok = True
+            break
         except Exception as e:
             if "Conflict" in str(e):
-                try: httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true")
+                try:
+                    httpx.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true")
                 except: pass
-                await asyncio.sleep(10*(i+1))
-            else: print(str(e)[:120], flush=True); await asyncio.sleep(5)
+                await asyncio.sleep(10 * (i + 1))
+            else:
+                print(str(e)[:120], flush=True)
+                await asyncio.sleep(5)
     if not ok: return
-    try: await asyncio.Event().wait()
-    except asyncio.CancelledError: pass
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        pass
     finally:
-        stop_all_accounts(); await asyncio.sleep(2)
+        stop_all_accounts()
+        await asyncio.sleep(2)
         for fn in (app.updater.stop, app.stop, app.shutdown):
             try: await fn()
             except: pass
 
+
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
-    print(f"🌐 Flask on port {os.environ.get('PORT',10000)}", flush=True)
-    try: asyncio.run(main())
-    except KeyboardInterrupt: logger.info("exit")
+    print(f"🌐 Flask on port {os.environ.get('PORT', 10000)}", flush=True)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("exit")
     except Exception as e:
-        print(e, flush=True); import traceback; traceback.print_exc(); sys.exit(1)
+        print(e, flush=True)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
